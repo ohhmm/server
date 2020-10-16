@@ -6927,6 +6927,13 @@ remove_key:
     *period_info= {};
   }
 
+  /*
+    if we have killed state (for example because local memory used execeeds
+    maximum session memory used), then return TRUE.
+  */
+   if (thd->killed)
+     DBUG_RETURN(true);
+
   DBUG_RETURN(false);
 }
 
