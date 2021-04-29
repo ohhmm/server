@@ -9236,6 +9236,24 @@ static my_bool find_thread_callback(THD *thd, find_thread_callback_arg *arg)
   return 0;
 }
 
+static my_bool find_thread_with_thd_data_lock_callback(THD *thd, find_thread_callback_arg *arg)
+{
+  if (arg->id == (arg->query_id ? thd->query_id : (longlong) thd->thread_id))
+  {
+    mysql_mutex_lock(&thd->LOCK_thd_kill);    // Lock from delete
+    mysql_mutex_lock(&thd->LOCK_thd_data);    // Lock from concurrent usage
+    arg->thd= thd;
+    return 1;
+  }
+  return 0;
+}
+
+THD *find_thread_by_id_with_thd_data_lock(longlong id, bool query_id)
+{
+  find_thread_callback_arg arg(id, query_id);
+  server_threads.iterate(find_thread_with_thd_data_lock_callback, &arg);
+  return arg.thd;
+}
 
 THD *find_thread_by_id(longlong id, bool query_id)
 {
@@ -9260,10 +9278,11 @@ kill_one_thread(THD *thd, longlong id, killed_state kill_signal, killed_type typ
   uint error= (type == KILL_TYPE_QUERY ? ER_NO_SUCH_QUERY : ER_NO_SUCH_THREAD);
   DBUG_ENTER("kill_one_thread");
   DBUG_PRINT("enter", ("id: %lld  signal: %u", id, (uint) kill_signal));
-  tmp= find_thread_by_id(id, type == KILL_TYPE_QUERY);
+  tmp= find_thread_by_id_with_thd_data_lock(id, type == KILL_TYPE_QUERY);
   if (!tmp)
     DBUG_RETURN(error);
 
+  bool released_LOCK= false;
   if (tmp->get_command() != COM_DAEMON)
   {
     /*
@@ -9287,10 +9306,9 @@ kill_one_thread(THD *thd, longlong id, killed_state kill_signal, killed_type typ
       faster and do a harder kill than KILL_SYSTEM_THREAD;
     */
 
-    mysql_mutex_lock(&tmp->LOCK_thd_data); // for various wsrep* checks below
 #ifdef WITH_WSREP
     if (((thd->security_ctx->master_access & PRIV_KILL_OTHER_USER_PROCESS) ||
-        thd->security_ctx->user_matches(tmp->security_ctx)) &&
+          thd->security_ctx->user_matches(tmp->security_ctx)) &&
         !wsrep_thd_is_BF(tmp, false) && !tmp->wsrep_applier)
 #else
     if ((thd->security_ctx->master_access & PRIV_KILL_OTHER_USER_PROCESS) ||
@@ -9311,7 +9329,20 @@ kill_one_thread(THD *thd, longlong id, killed_state kill_signal, killed_type typ
       {
         WSREP_DEBUG("kill_one_thread %llu, victim: %llu wsrep_aborter %llu by signal %d",
                     thd->thread_id, id, tmp->wsrep_aborter, kill_signal);
-        tmp->awake_no_mutex(kill_signal);
+#ifdef WITH_WSREP
+        /* killing a thread in a cluster node, must happen in controlled way to
+        avoid mutex locking ordering violation. Here we test that victim is
+        not high priority, and use wsrep_abort_thd() for killing the victim */
+        if (WSREP(thd))
+        {
+          mysql_mutex_unlock(&tmp->LOCK_thd_kill);
+          mysql_mutex_unlock(&tmp->LOCK_thd_data);
+          released_LOCK= true;
+          wsrep_abort_thd(thd, tmp, true, kill_signal);
+        }
+        else
+#endif /* WITH_WSREP */
+          tmp->awake_no_mutex(kill_signal);
         WSREP_DEBUG("victim: %llu taken care of", id);
         error= 0;
       }
@@ -9319,9 +9350,14 @@ kill_one_thread(THD *thd, longlong id, killed_state kill_signal, killed_type typ
     else
       error= (type == KILL_TYPE_QUERY ? ER_KILL_QUERY_DENIED_ERROR :
                                         ER_KILL_DENIED_ERROR);
+  }
+
+  if (!released_LOCK)
+  {
+    mysql_mutex_unlock(&tmp->LOCK_thd_kill);
     mysql_mutex_unlock(&tmp->LOCK_thd_data);
   }
-  mysql_mutex_unlock(&tmp->LOCK_thd_kill);
+
   DBUG_PRINT("exit", ("%d", error));
   DBUG_RETURN(error);
 }

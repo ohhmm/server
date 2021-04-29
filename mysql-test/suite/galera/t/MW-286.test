@@ -47,12 +47,15 @@ SET debug_sync='RESET';
 # ALTER should have been aborted with query interupted error code
 #
 --connection node_2
---error ER_QUERY_INTERRUPTED
 --reap
 
 SET wsrep_on = TRUE;
 SET GLOBAL wsrep_desync = FALSE;
 
---connection node_1
+SHOW CREATE TABLE t1;
+SELECT * FROM t1;
 
+--connection node_1
+SET SESSION wsrep_sync_wait=15;
+SELECT * FROM t1;
 DROP TABLE t1;

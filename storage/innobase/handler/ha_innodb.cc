@@ -63,7 +63,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include <my_service_manager.h>
 #include <key.h>
-#include <sql_manager.h>
 
 /* Include necessary InnoDB headers */
 #include "btr0btr.h"
@@ -156,6 +155,7 @@ void close_thread_tables(THD* thd);
 #include "dict0priv.h"
 #include <mysql/service_md5.h>
 #include "wsrep_sst.h"
+#include "wsrep_mysqld.h"
 #endif /* WITH_WSREP */
 
 #define INSIDE_HA_INNOBASE_CC
@@ -1610,7 +1610,7 @@ thd_to_trx_id(
 	return(thd_to_trx(thd)->id);
 }
 
-static void wsrep_abort_transaction(handlerton*, THD *, THD *, my_bool);
+static int wsrep_abort_transaction(handlerton*, THD *, THD *, my_bool, int kill_signal=-1);
 static int innobase_wsrep_set_checkpoint(handlerton* hton, const XID* xid);
 static int innobase_wsrep_get_checkpoint(handlerton* hton, XID* xid);
 #endif /* WITH_WSREP */
@@ -4762,7 +4762,7 @@ static void innobase_kill_query(handlerton*, THD *thd, enum thd_kill_levels)
   {
     ut_ad(trx->mysql_thd == thd);
 #ifdef WITH_WSREP
-    if (trx->is_wsrep() && wsrep_thd_is_aborting(thd))
+    if (wsrep_thd_is_aborting(thd) || wsrep_thd_get_wsrep_aborter(thd))
       /* if victim has been signaled by BF thread and/or aborting is already
       progressing, following query aborting is not necessary any more.
       Also, BF thread should own trx mutex for the victim. */
@@ -4772,8 +4772,6 @@ static void innobase_kill_query(handlerton*, THD *thd, enum thd_kill_levels)
     if (lock_t *lock= trx->lock.wait_lock)
     {
       trx_mutex_enter(trx);
-      if (trx->is_wsrep() && wsrep_thd_is_aborting(thd))
-        trx->lock.was_chosen_as_deadlock_victim= TRUE;
       lock_cancel_waiting_and_release(lock);
       trx_mutex_exit(trx);
     }
@@ -18667,59 +18665,71 @@ static struct st_mysql_storage_engine innobase_storage_engine=
 
 #ifdef WITH_WSREP
 
-struct bg_wsrep_kill_trx_arg {
-       my_thread_id    thd_id, bf_thd_id;
-       trx_id_t        trx_id, bf_trx_id;
-       bool            signal;
-};
+/** This function is used to kill one transaction in BF.
 
-/** Kill one transaction from a background manager thread
+This transaction was open on this node (not-yet-committed), and a
+conflicting writeset from some other node that was being applied
+caused a locking conflict.  First committed (from other node)
+wins, thus open transaction is rolled back.  BF stands for
+brute-force: any transaction can get aborted by galera any time
+it is necessary.
 
-wsrep_innobase_kill_one_trx() is invoked when lock_sys.mutex and trx mutex
-are taken, wsrep_thd_bf_abort() cannot be used there as it takes THD mutexes
-that must be taken before lock_sys.mutex and trx mutex. That's why
-wsrep_innobase_kill_one_trx only posts the killing task to the manager thread
-and the actual killing happens asynchronously here.
+This conflict can happen only when the replicated writeset (from
+other node) is being applied, not when it’s waiting in the queue.
+If our local transaction reached its COMMIT and this conflicting
+writeset was in the queue, then it should fail the local
+certification test instead.
+A brute force abort is only triggered by a locking conflict
+between a writeset being applied by an applier thread (slave thread)
+and an open transaction on the node, not by a Galera writeset
+comparison as in the local certification failure.
 
-As no mutexes were held we don't know whether THD or trx pointers are still
-valid, so we need to pass thread/trx ids and perform a lookup.
-*/
-static void bg_wsrep_kill_trx(void *void_arg)
+@param bf_thd       brute force THD asking for the abort
+@param victim_trx   victim transaction to be aborted
+@param signal       should victim signaled
+@param kill_signal  kill signal type
+
+@return 0 victim was aborted
+@return -1 victim thread was not aborted */
+
+UNIV_INTERN
+int
+wsrep_innobase_kill_one_trx(
+	MYSQL_THD const bf_thd,
+	trx_t *victim_trx,
+	ibool signal,
+	int kill_signal= KILL_QUERY)
 {
-	bg_wsrep_kill_trx_arg *arg= (bg_wsrep_kill_trx_arg *)void_arg;
-	THD *thd, *bf_thd;
-	trx_t *victim_trx;
-	bool aborting= false;
+	ut_ad(bf_thd);
+	ut_ad(victim_trx);
+	ut_ad(lock_mutex_own());
+	ut_ad(trx_mutex_own(victim_trx));
 
-	if ((bf_thd= find_thread_by_id(arg->bf_thd_id)))
-		wsrep_thd_LOCK(bf_thd);
-	if ((thd= find_thread_by_id(arg->thd_id)))
-		wsrep_thd_LOCK(thd);
+	DBUG_ENTER("wsrep_innobase_kill_one_trx");
+	THD *thd= (THD *) victim_trx->mysql_thd;
+	/* Note that bf_trx might not exist here e.g. on MDL conflict
+	case (test: galera_concurrent_ctas). Similarly, BF thread
+	could be also acquiring MDL-lock causing victim to be
+	aborted. However, we have not yet called innobase_trx_init()
+	for BF transaction (test: galera_many_columns)*/
+	const trx_t *bf_trx= thd_to_trx(bf_thd);
 
-	if (!thd || !bf_thd || !(victim_trx= thd_to_trx(thd)))
-		goto ret0;
-
-	lock_mutex_enter();
-	trx_mutex_enter(victim_trx);
-	if (victim_trx->id != arg->trx_id
-	    || victim_trx->state == TRX_STATE_COMMITTED_IN_MEMORY)
-	{
-		/* Apparently victim trx was meanwhile rolled back or
-		committed. Tell bf thd not to wait, in case it already
-		started to. */
-		trx_t *trx= thd_to_trx(bf_thd);
-		if (!trx) {
-			/* bf_thd might not be associated with a
-			transaction, in case of MDL conflict */
-		} else if (lock_t *lock = trx->lock.wait_lock) {
-			trx_mutex_enter(trx);
-			lock_cancel_waiting_and_release(lock);
-			trx_mutex_exit(trx);
-		}
-		goto ret1;
+	if (!thd) {
+		WSREP_WARN("No THD for victim trx: " TRX_ID_FMT, victim_trx->id);
+		DBUG_RETURN(-1);
 	}
 
 	DBUG_ASSERT(wsrep_on(bf_thd));
+
+	wsrep_thd_LOCK(thd);
+	DBUG_EXECUTE_IF("sync.wsrep_after_BF_victim_lock",
+	{
+		const char act[]=
+			"now "
+			"wait_for signal.wsrep_after_BF_victim_lock";
+		DBUG_ASSERT(!debug_sync_set_action(bf_thd,
+						   STRING_WITH_LEN(act)));
+	};);
 
 	WSREP_LOG_CONFLICT(bf_thd, thd, TRUE);
 
@@ -18727,7 +18737,7 @@ static void bg_wsrep_kill_trx(void *void_arg)
 		"seqno: %lld client_state: %s client_mode: %s transaction_mode: %s "
 		"query: %s",
 		wsrep_thd_is_BF(bf_thd, false) ? "BF" : "normal",
-		arg->bf_trx_id,
+		bf_trx ? bf_trx->id : TRX_ID_MAX,
 		thd_get_thread_id(bf_thd),
 		wsrep_thd_trx_seqno(bf_thd),
 		wsrep_thd_client_state_str(bf_thd),
@@ -18751,87 +18761,30 @@ static void bg_wsrep_kill_trx(void *void_arg)
 	victim_trx->lock.was_chosen_as_wsrep_victim= true;
 	if (wsrep_thd_set_wsrep_aborter(bf_thd, thd))
 	{
-	  WSREP_DEBUG("innodb kill transaction skipped due to wsrep_aborter set");
-	  goto ret1;
-	}
-
-	aborting= true;
-
-ret1:
-	trx_mutex_exit(victim_trx);
-	lock_mutex_exit();
-ret0:
-	if (thd) {
+		WSREP_DEBUG("Innodb kill transaction skipped due to wsrep_aborter set");
 		wsrep_thd_UNLOCK(thd);
-		if (aborting) {
-			DEBUG_SYNC(bf_thd, "before_wsrep_thd_abort");
-			wsrep_thd_bf_abort(bf_thd, thd, arg->signal);
+		DBUG_RETURN(-1);
+	}
+
+	/* Note that wsrep-lib will lock THD::LOCK_thd_data, thus
+	we need to release it here. */
+	wsrep_thd_UNLOCK(thd);
+	DEBUG_SYNC(bf_thd, "before_wsrep_thd_abort");
+
+	if (wsrep_thd_bf_abort(bf_thd, thd, (my_bool)signal, kill_signal))
+	{
+		lock_t*  wait_lock= victim_trx->lock.wait_lock;
+		if (wait_lock) {
+			ut_ad(victim_trx->is_wsrep());
+			WSREP_DEBUG("Victim thread %lu canceling wait lock.",
+				    thd_get_thread_id(thd));
+
+			victim_trx->lock.was_chosen_as_deadlock_victim= TRUE;
+			lock_cancel_waiting_and_release(wait_lock);
 		}
-		wsrep_thd_kill_UNLOCK(thd);
 	}
-	if (bf_thd) {
-		wsrep_thd_UNLOCK(bf_thd);
-		wsrep_thd_kill_UNLOCK(bf_thd);
-	}
-	free(arg);
-}
 
-/** This function is used to kill one transaction.
-
-This transaction was open on this node (not-yet-committed), and a
-conflicting writeset from some other node that was being applied
-caused a locking conflict.  First committed (from other node)
-wins, thus open transaction is rolled back.  BF stands for
-brute-force: any transaction can get aborted by galera any time
-it is necessary.
-
-This conflict can happen only when the replicated writeset (from
-other node) is being applied, not when it’s waiting in the queue.
-If our local transaction reached its COMMIT and this conflicting
-writeset was in the queue, then it should fail the local
-certification test instead.
-
-A brute force abort is only triggered by a locking conflict
-between a writeset being applied by an applier thread (slave thread)
-and an open transaction on the node, not by a Galera writeset
-comparison as in the local certification failure.
-
-@param[in]	bf_thd		Brute force (BF) thread
-@param[in,out]	victim_trx	Transaction to be killed
-@param[in]	signal		Should victim be signaled */
-void
-wsrep_innobase_kill_one_trx(
-	THD* bf_thd,
-	trx_t *victim_trx,
-	bool signal)
-{
-	ut_ad(bf_thd);
-	ut_ad(victim_trx);
-	ut_ad(lock_mutex_own());
-	ut_ad(trx_mutex_own(victim_trx));
-
-	DBUG_ENTER("wsrep_innobase_kill_one_trx");
-
-	DBUG_EXECUTE_IF("sync.before_wsrep_thd_abort",
-			 {
-			   const char act[]=
-			     "now "
-			     "SIGNAL sync.before_wsrep_thd_abort_reached "
-			     "WAIT_FOR signal.before_wsrep_thd_abort";
-			   DBUG_ASSERT(!debug_sync_set_action(bf_thd,
-							      STRING_WITH_LEN(act)));
-			 };);
-
-	trx_t* bf_trx= thd_to_trx(bf_thd);
-	bg_wsrep_kill_trx_arg *arg = (bg_wsrep_kill_trx_arg*)malloc(sizeof(*arg));
-	arg->thd_id     = thd_get_thread_id(victim_trx->mysql_thd);
-	arg->trx_id     = victim_trx->id;
-	arg->bf_thd_id  = thd_get_thread_id(bf_thd);
-	arg->bf_trx_id  = bf_trx ? bf_trx->id : TRX_ID_MAX;
-	arg->signal     = signal;
-	mysql_manager_submit(bg_wsrep_kill_trx, arg);
-
-	DBUG_VOID_RETURN;
+	DBUG_RETURN(0);
 }
 
 /** This function forces the victim transaction to abort. Aborting the
@@ -18839,23 +18792,26 @@ wsrep_innobase_kill_one_trx(
 
   @param bf_thd       brute force THD asking for the abort
   @param victim_thd   victim THD to be aborted
+  @param signal       should victim signaled
+  @param kill_signal  kill signal type
 
   @return 0 victim was aborted
   @return -1 victim thread was aborted (no transaction)
 */
 static
-void
-wsrep_abort_transaction(
+int wsrep_abort_transaction(
 	handlerton*,
 	THD *bf_thd,
 	THD *victim_thd,
-	my_bool signal)
+	my_bool signal,
+	int kill_signal)
 {
 	DBUG_ENTER("wsrep_abort_transaction");
 	ut_ad(bf_thd);
 	ut_ad(victim_thd);
 
-	trx_t* victim_trx	= thd_to_trx(victim_thd);
+	ut_ad(victim_thd);
+	trx_t* victim_trx= thd_to_trx(victim_thd);
 
 	WSREP_DEBUG("abort transaction: BF: %s victim: %s victim conf: %s",
 			wsrep_thd_query(bf_thd),
@@ -18865,45 +18821,30 @@ wsrep_abort_transaction(
 	if (victim_trx) {
 		lock_mutex_enter();
 		trx_mutex_enter(victim_trx);
-		victim_trx->lock.was_chosen_as_wsrep_victim= true;
-		trx_mutex_exit(victim_trx);
-		lock_mutex_exit();
-
-		wsrep_thd_kill_LOCK(victim_thd);
-		wsrep_thd_LOCK(victim_thd);
-		bool aborting= !wsrep_thd_set_wsrep_aborter(bf_thd, victim_thd);
-		wsrep_thd_UNLOCK(victim_thd);
-		if (aborting) {
-			DEBUG_SYNC(bf_thd, "before_wsrep_thd_abort");
-			DBUG_EXECUTE_IF("sync.before_wsrep_thd_abort",
-					 {
-					   const char act[]=
-					     "now "
-					     "SIGNAL sync.before_wsrep_thd_abort_reached "
-					     "WAIT_FOR signal.before_wsrep_thd_abort";
-					   DBUG_ASSERT(!debug_sync_set_action(bf_thd,
-									      STRING_WITH_LEN(act)));
-					 };);
-			wsrep_thd_bf_abort(bf_thd, victim_thd, signal);
+		/* Transaction must be active state when killing it,
+		it may not be committed in memory or prepared */
+		if (victim_trx->state == TRX_STATE_ACTIVE) {
+			int rcode= wsrep_innobase_kill_one_trx(bf_thd,
+							       victim_trx,
+							       signal,
+							       kill_signal);
+			trx_mutex_exit(victim_trx);
+			lock_mutex_exit();
+			DBUG_RETURN(rcode);
+		} else {
+			WSREP_DEBUG("Victim trx id: "  TRX_ID_FMT
+				    " in trx_state: %d",
+				    victim_trx->id,
+				    victim_trx->state);
 		}
-		wsrep_thd_kill_UNLOCK(victim_thd);
-		DBUG_VOID_RETURN;
+		lock_mutex_exit();
+		trx_mutex_exit(victim_trx);
 	} else {
-		DBUG_EXECUTE_IF("sync.before_wsrep_thd_abort",
-				 {
-				   const char act[]=
-				     "now "
-				     "SIGNAL sync.before_wsrep_thd_abort_reached "
-				     "WAIT_FOR signal.before_wsrep_thd_abort";
-				   DBUG_ASSERT(!debug_sync_set_action(bf_thd,
-								      STRING_WITH_LEN(act)));
-				 };);
-		wsrep_thd_kill_LOCK(victim_thd);
-		wsrep_thd_bf_abort(bf_thd, victim_thd, signal);
-		wsrep_thd_kill_UNLOCK(victim_thd);
+		WSREP_DEBUG("Victim does not have transaction");
+		wsrep_thd_bf_abort(bf_thd, victim_thd, signal, kill_signal);
 	}
 
-	DBUG_VOID_RETURN;
+	DBUG_RETURN(-1);
 }
 
 static

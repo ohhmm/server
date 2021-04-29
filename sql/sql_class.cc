@@ -2068,12 +2068,23 @@ bool THD::notify_shared_lock(MDL_context_owner *ctx_in_use,
           signalled|= mysql_lock_abort_for_thread(this, thd_table);
         }
       }
+
+#ifdef WITH_WSREP
+      if (WSREP(this) && wsrep_thd_is_BF(this, FALSE))
+      {
+        WSREP_DEBUG("remove_table_from_cache: %llu",
+                    (unsigned long long) this->real_id);
+        mysql_mutex_unlock(&in_use->LOCK_thd_data);
+        wsrep_abort_thd((void *)this, (void *)in_use, false, KILL_QUERY);
+        mysql_mutex_lock(&in_use->LOCK_thd_data);
+
+      }
+#endif /* WITH_WSREP */
     }
     mysql_mutex_unlock(&in_use->LOCK_thd_data);
   }
   DBUG_RETURN(signalled);
 }
-
 
 /*
   Get error number for killed state
