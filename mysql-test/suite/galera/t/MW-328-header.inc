@@ -5,7 +5,7 @@
 CREATE TABLE t1 (f1 INTEGER AUTO_INCREMENT PRIMARY KEY, f2 CHAR(20) DEFAULT 'abc') ENGINE=InnoDB;
 INSERT INTO t1 (f1) VALUES (1);
 
-CREATE TABLE t2 (f1 CHAR(20)) ENGINE=InnoDB;
+CREATE TABLE t2 (id INTEGER AUTO_INCREMENT PRIMARY KEY, f1 CHAR(20)) ENGINE=InnoDB;
 
 #
 # Have some random updates going on against t1
@@ -18,6 +18,7 @@ BEGIN
         SET SESSION wsrep_sync_wait = 0;
         WHILE 1 DO
                 UPDATE t1 SET f2 = LEFT(MD5(RAND()), 4);
+		SELECT SLEEP(0.1);
         END WHILE;
 END|
 

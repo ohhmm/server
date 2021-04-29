@@ -1,4 +1,4 @@
-/* Copyright (C) 2013 Codership Oy <info@codership.com>
+/* Copyright (C) 2013-2021 Codership Oy <info@codership.com>
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -307,8 +307,7 @@ void wsrep_fire_rollbacker(THD *thd)
   }
 }
 
-
-int wsrep_abort_thd(THD *bf_thd_ptr, THD *victim_thd_ptr, my_bool signal)
+int wsrep_abort_thd(void *bf_thd_ptr, void *victim_thd_ptr, my_bool signal, int kill_signal)
 {
   DBUG_ENTER("wsrep_abort_thd");
   THD *victim_thd= (THD *) victim_thd_ptr;
@@ -328,7 +327,7 @@ int wsrep_abort_thd(THD *bf_thd_ptr, THD *victim_thd_ptr, my_bool signal)
       WSREP_DEBUG("wsrep_abort_thd, by: %llu, victim: %llu", (bf_thd) ?
                   (long long)bf_thd->real_id : 0, (long long)victim_thd->real_id);
       mysql_mutex_unlock(&victim_thd->LOCK_thd_data);
-      ha_abort_transaction(bf_thd, victim_thd, signal);
+      ha_abort_transaction(bf_thd, victim_thd, signal, kill_signal);
       mysql_mutex_lock(&victim_thd->LOCK_thd_data);
   }
   else
@@ -349,10 +348,18 @@ bool wsrep_bf_abort(const THD* bf_thd, THD* victim_thd)
   if (WSREP(victim_thd) && !victim_thd->wsrep_trx().active())
   {
     WSREP_DEBUG("wsrep_bf_abort, BF abort for non active transaction");
+    switch (victim_thd->wsrep_trx().state()) {
+    case wsrep::transaction::s_aborting: /* fall through */
+    case wsrep::transaction::s_aborted:
+      WSREP_DEBUG("victim is aborting or has aborted");
+      return false;
+    default: break;
+    }
     wsrep_start_transaction(victim_thd, victim_thd->wsrep_next_trx_id());
   }
 
   bool ret;
+
   if (wsrep_thd_is_toi(bf_thd))
   {
     ret= victim_thd->wsrep_cs().total_order_bf_abort(bf_seqno);
@@ -365,6 +372,7 @@ bool wsrep_bf_abort(const THD* bf_thd, THD* victim_thd)
   {
     wsrep_bf_aborts_counter++;
   }
+
   return ret;
 }
 

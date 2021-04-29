@@ -69,6 +69,8 @@ bool Wsrep_client_service::interrupted(
   wsrep::unique_lock<wsrep::mutex>& lock WSREP_UNUSED) const
 {
   DBUG_ASSERT(m_thd == current_thd);
+  /* Underlying mutex in lock object points to THD::LOCK_thd_data, which
+  protects m_thd->wsrep_trx() */
   mysql_mutex_assert_owner(static_cast<mysql_mutex_t*>(lock.mutex()->native()));
   bool ret= (m_thd->killed != NOT_KILLED);
   if (ret)

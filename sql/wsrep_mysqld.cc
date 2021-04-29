@@ -1,4 +1,4 @@
-/* Copyright 2008-2015 Codership Oy <http://www.codership.com>
+/* Copyright 2008-2021 Codership Oy <http://www.codership.com>
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -288,13 +288,13 @@ void WSREP_LOG(void (*fun)(const char* fmt, ...), const char* fmt, ...)
   char msg[128] = {'\0'};
   va_list arglist;
   va_start(arglist, fmt);
-  int n= vsnprintf(msg, sizeof(msg) - 1, fmt, arglist);
+  int n= vsnprintf(msg, sizeof(msg), fmt, arglist);
   va_end(arglist);
   if (n < 0)
   {
     sql_print_warning("WSREP: Printing message failed");
   }
-  else if (n < (int)sizeof(msg))
+  else if (n <= (int)sizeof(msg))
   {
     fun("WSREP: %s", msg);
   }
@@ -2280,11 +2280,11 @@ void wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
                                MDL_ticket *ticket,
                                const MDL_key *key)
 {
-  /* Fallback to the non-wsrep behaviour */
-  if (!WSREP_ON) return;
-
   THD *request_thd= requestor_ctx->get_thd();
   THD *granted_thd= ticket->get_ctx()->get_thd();
+
+  /* Fallback to the non-wsrep behaviour */
+  if (!WSREP(request_thd)) return;
 
   const char* schema= key->db_name();
   int schema_len= key->db_name_length();
@@ -2313,7 +2313,7 @@ void wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
         WSREP_MDL_LOG(INFO, "MDL conflict, DDL vs SR", 
                       schema, schema_len, request_thd, granted_thd);
         mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
-        wsrep_abort_thd(request_thd, granted_thd, 1);
+        wsrep_abort_thd(request_thd, granted_thd, 1, KILL_QUERY);
       }
       else
       {
@@ -2337,7 +2337,7 @@ void wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
                   wsrep_thd_transaction_state_str(granted_thd));
       ticket->wsrep_report(wsrep_debug);
       mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
-      wsrep_abort_thd(request_thd, granted_thd, 1);
+      wsrep_abort_thd(request_thd, granted_thd, 1, KILL_QUERY);
     }
     else
     {
@@ -2347,7 +2347,7 @@ void wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
       if (granted_thd->wsrep_trx().active())
       {
         mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
-        wsrep_abort_thd(request_thd, granted_thd, 1);
+        wsrep_abort_thd(request_thd, granted_thd, 1, KILL_QUERY);
       }
       else
       {
@@ -2358,7 +2358,7 @@ void wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
         mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
         if (wsrep_thd_is_BF(request_thd, FALSE))
         {
-          ha_abort_transaction(request_thd, granted_thd, TRUE);
+          ha_abort_transaction(request_thd, granted_thd, TRUE, KILL_QUERY);
         }
         else
         {
@@ -2384,7 +2384,7 @@ static bool abort_replicated(THD *thd)
   {
     WSREP_DEBUG("aborting replicated trx: %llu", (ulonglong)(thd->real_id));
 
-    (void)wsrep_abort_thd(thd, thd, TRUE);
+    (void)wsrep_abort_thd(thd, thd, TRUE, KILL_QUERY);
     ret_code= true;
   }
   return ret_code;
@@ -2656,6 +2656,14 @@ ignore_error:
              ev->get_type_str(),
              error);
   return 1;
+}
+
+void wsrep_thd_awake(THD *thd, my_bool signal, int kill_signal)
+{
+  if (signal)
+    thd->awake((killed_state)kill_signal);
+  else
+    mysql_mutex_unlock(&LOCK_wsrep_replaying);
 }
 
 bool wsrep_provider_is_SR_capable()

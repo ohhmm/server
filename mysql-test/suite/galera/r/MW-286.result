@@ -17,8 +17,26 @@ connection node_2a;
 SET debug_sync = "now SIGNAL mdl_continue";
 SET debug_sync='RESET';
 connection node_2;
-ERROR 70100: Query execution was interrupted
 SET wsrep_on = TRUE;
 SET GLOBAL wsrep_desync = FALSE;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `f1` int(11) NOT NULL,
+  PRIMARY KEY (`f1`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1
+SELECT * FROM t1;
+f1
+1
+2
+3
+11
 connection node_1;
+SET SESSION wsrep_sync_wait=15;
+SELECT * FROM t1;
+f1
+1
+2
+3
+11
 DROP TABLE t1;

@@ -8,10 +8,10 @@
 
 --source include/galera_cluster.inc
 
-CREATE TABLE t1 (i INT) ENGINE = InnoDB;
+CREATE TABLE t1 (i INT NOT NULL PRIMARY KEY) ENGINE = InnoDB;
 INSERT INTO t1 (i) VALUES(1);
 
-CREATE TABLE t2 (i INT) ENGINE = InnoDB;
+CREATE TABLE t2 (i INT NOT NULL PRIMARY KEY) ENGINE = InnoDB;
 
 # Create a deadlock situation
 
