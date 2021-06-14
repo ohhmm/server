@@ -10929,7 +10929,7 @@ do_continue:;
         DROP + CREATE + data statement to the binary log
       */
       thd->variables.option_bits&= ~OPTION_BIN_COMMIT_OFF;
-      (binlog_hton->commit)(binlog_hton, thd, 1);
+      binlog_commit(thd, true);
     }
 
     /* We don't replicate alter table statement on temporary tables */
@@ -11108,7 +11108,7 @@ do_continue:;
       DROP + CREATE + data statement to the binary log
     */
     thd->variables.option_bits&= ~OPTION_BIN_COMMIT_OFF;
-    binlog_hton->commit(binlog_hton, thd, 1);
+    binlog_commit(thd, true);
   }
 
   if (error)

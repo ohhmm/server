@@ -11034,7 +11034,7 @@ void Recovery_context::process_gtid(int round, Gtid_log_event *gev,
   last_gtid_coord= Binlog_offset(id_binlog, prev_event_pos);
 
   DBUG_ASSERT(!last_gtid_valid);
-  DBUG_ASSERT(!last_gtid.seq_no == 0);
+  DBUG_ASSERT(last_gtid.seq_no != 0);
 
   if (round == 1 || (do_truncate && !truncate_validated))
   {
@@ -11126,7 +11126,6 @@ int TC_LOG_BINLOG::recover(LOG_INFO *linfo, const char *last_log_name,
 #ifdef HAVE_REPLICATION
   Recovery_context ctx;
 #endif
-  DBUG_ENTER("TC_LOG_BINLOG::recover");
   /*
     The for-loop variable is updated by the following rule set:
     Initially set to 1.
@@ -11358,6 +11357,9 @@ int TC_LOG_BINLOG::recover(LOG_INFO *linfo, const char *last_log_name,
         goto err2;
     }
   }
+  free_root(&mem_root, MYF(0));
+  my_hash_free(&xids);
+
   return 0;
 
 err2:
@@ -11367,11 +11369,9 @@ err2:
     end_io_cache(&log);
     mysql_file_close(file, MYF(MY_WME));
   }
-  if (do_xa)
-  {
-    free_root(&mem_root, MYF(0));
-    my_hash_free(&xids);
-  }
+  free_root(&mem_root, MYF(0));
+  my_hash_free(&xids);
+
 err1:
   sql_print_error("Crash recovery failed. Either correct the problem "
                   "(if it's, for example, out of memory error) and restart, "
