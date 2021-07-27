@@ -46,7 +46,7 @@ u1	*A9A5EF53CE2EFAA6F4A746D63A917B2370971A7E
 u2	
 connection master;
 CREATE USER u1@localhost;
-ERROR HY000: Operation CREATE USER failed for 'u1'@'localhost'
+ERROR HY000: Operation CREATE USER failed for 'u1'@'localhost',user already exists
 DROP USER u3@localhost;
 ERROR HY000: Operation DROP USER failed for 'u3'@'localhost'
 connection slave;

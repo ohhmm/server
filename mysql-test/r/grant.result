@@ -844,11 +844,11 @@ flush privileges;
 create user mysqltest_8@'';
 create user mysqltest_8@host8;
 create user mysqltest_8@'';
-ERROR HY000: Operation CREATE USER failed for 'mysqltest_8'@'%'
+ERROR HY000: Operation CREATE USER failed for 'mysqltest_8'@'%',user already exists
 create user mysqltest_8;
-ERROR HY000: Operation CREATE USER failed for 'mysqltest_8'@'%'
+ERROR HY000: Operation CREATE USER failed for 'mysqltest_8'@'%',user already exists
 create user mysqltest_8@host8;
-ERROR HY000: Operation CREATE USER failed for 'mysqltest_8'@'host8'
+ERROR HY000: Operation CREATE USER failed for 'mysqltest_8'@'host8',user already exists
 select user, QUOTE(host) from mysql.user where user="mysqltest_8";
 user	QUOTE(host)
 mysqltest_8	'%'

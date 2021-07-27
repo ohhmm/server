@@ -164,9 +164,9 @@ GRANT ALL PRIVILEGES ON test_user_db.* TO plug IDENTIFIED WITH 'test_plugin_serv
 DROP USER plug;
 GRANT ALL PRIVILEGES ON test_user_db.* TO plug IDENTIFIED WITH test_plugin_server AS 'plug_dest';
 CREATE USER plug IDENTIFIED WITH 'test_plugin_server' AS 'plug_dest';
-ERROR HY000: Operation CREATE USER failed for 'plug'@'%'
+ERROR HY000: Operation CREATE USER failed for 'plug'@'%',user already exists
 CREATE USER plug IDENTIFIED WITH 'test_plugin_server';
-ERROR HY000: Operation CREATE USER failed for 'plug'@'%'
+ERROR HY000: Operation CREATE USER failed for 'plug'@'%',user already exists
 DROP USER plug;
 CREATE USER plug IDENTIFIED WITH 'test_plugin_server' AS 'plug_dest';
 SELECT user,plugin,authentication_string,password FROM mysql.user WHERE user != 'root';
@@ -179,7 +179,7 @@ plug			*939AEE68989794C0F408277411C26055CDF41119
 DROP USER plug;
 GRANT ALL PRIVILEGES ON test_user_db.* TO plug IDENTIFIED WITH test_plugin_server AS 'plug_dest';
 CREATE USER plug IDENTIFIED BY 'plug_dest_passwd';
-ERROR HY000: Operation CREATE USER failed for 'plug'@'%'
+ERROR HY000: Operation CREATE USER failed for 'plug'@'%',user already exists
 DROP USER plug;
 CREATE USER plug IDENTIFIED WITH 'test_plugin_server' AS 'plug_dest';
 CREATE USER plug_dest IDENTIFIED WITH 'test_plugin_server' AS 'plug_dest';

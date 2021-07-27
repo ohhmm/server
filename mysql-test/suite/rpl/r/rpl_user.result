@@ -11,9 +11,9 @@ set session sql_log_bin=1;
 connection master;
 create user 'foo'@'fakehost';
 create user 'foo'@'fakehost', 'bar'@'fakehost';
-ERROR HY000: Operation CREATE USER failed for 'foo'@'fakehost'
+ERROR HY000: Operation CREATE USER failed for 'foo'@'fakehost',user already exists
 create user 'foo'@'fakehost', 'bar'@'fakehost';
-ERROR HY000: Operation CREATE USER failed for 'foo'@'fakehost','bar'@'fakehost'
+ERROR HY000: Operation CREATE USER failed for 'foo'@'fakehost','bar'@'fakehost',user already exists
 connection slave;
 select Host,User from mysql.user where Host='fakehost';
 Host	User

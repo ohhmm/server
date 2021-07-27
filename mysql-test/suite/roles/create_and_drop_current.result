@@ -1,13 +1,13 @@
 create user foo@localhost;
 grant create user on *.* to foo@localhost;
 create user current_user;
-ERROR HY000: Operation CREATE USER failed for CURRENT_USER
+ERROR HY000: Operation CREATE USER failed for CURRENT_USER,user already exists
 create user current_role;
-ERROR HY000: Operation CREATE USER failed for CURRENT_ROLE
+ERROR HY000: Operation CREATE USER failed for CURRENT_ROLE,user already exists
 create role current_user;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MariaDB server version for the right syntax to use near 'current_user' at line 1
 create role current_role;
-ERROR HY000: Operation CREATE ROLE failed for CURRENT_ROLE
+ERROR HY000: Operation CREATE ROLE failed for CURRENT_ROLE,role already exists
 drop user current_user;
 drop user current_role;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MariaDB server version for the right syntax to use near 'current_role' at line 1
@@ -26,9 +26,9 @@ select current_role();
 current_role()
 r1
 create user current_role;
-ERROR HY000: Operation CREATE USER failed for CURRENT_ROLE
+ERROR HY000: Operation CREATE USER failed for CURRENT_ROLE,user already exists
 create role current_role;
-ERROR HY000: Operation CREATE ROLE failed for CURRENT_ROLE
+ERROR HY000: Operation CREATE ROLE failed for CURRENT_ROLE,role already exists
 drop user current_role;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MariaDB server version for the right syntax to use near 'current_role' at line 1
 drop role current_role;

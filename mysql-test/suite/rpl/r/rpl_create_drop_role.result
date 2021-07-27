@@ -29,7 +29,7 @@ role_2
 role_3
 connection master;
 CREATE ROLE role_2;
-ERROR HY000: Operation CREATE ROLE failed for 'role_2'
+ERROR HY000: Operation CREATE ROLE failed for 'role_2',role already exists
 connection slave;
 SELECT User FROM mysql.user WHERE is_role='Y' ORDER BY User;
 User

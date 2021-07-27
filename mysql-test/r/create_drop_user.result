@@ -25,13 +25,13 @@ DROP USER u1@localhost;
 ERROR HY000: Operation DROP USER failed for 'u1'@'localhost'
 CREATE OR REPLACE USER u1@localhost;
 CREATE USER u1@localhost;
-ERROR HY000: Operation CREATE USER failed for 'u1'@'localhost'
+ERROR HY000: Operation CREATE USER failed for 'u1'@'localhost',user already exists
 DROP USER u1@localhost;
 CREATE USER u1;
 CREATE USER u1, u2;
-ERROR HY000: Operation CREATE USER failed for 'u1'@'%'
+ERROR HY000: Operation CREATE USER failed for 'u1'@'%',user already exists
 CREATE USER u2;
-ERROR HY000: Operation CREATE USER failed for 'u2'@'%'
+ERROR HY000: Operation CREATE USER failed for 'u2'@'%',user already exists
 CREATE OR REPLACE USER u1 IDENTIFIED BY PASSWORD 'password', u2;
 ERROR HY000: Password hash should be a 41-digit hexadecimal number
 CREATE OR REPLACE USER u1 IDENTIFIED BY PASSWORD 'abcdefghijklmnop', u2;

@@ -22,7 +22,7 @@ GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION
 GRANT PROXY ON ''@'%' TO 'root'@'localhost' WITH GRANT OPTION
 # Test reexecution.
 EXECUTE stmtCreateRole;
-ERROR HY000: Operation CREATE ROLE failed for 'developers'
+ERROR HY000: Operation CREATE ROLE failed for 'developers',role already exists
 #
 # Now grant the role to the test user.
 #

@@ -38,7 +38,7 @@ CREATE OR REPLACE ROLE role_1;
 CREATE OR REPLACE ROLE IF NOT EXISTS role_1;
 ERROR HY000: Incorrect usage of OR REPLACE and IF NOT EXISTS
 CREATE ROLE role_1;
-ERROR HY000: Operation CREATE ROLE failed for 'role_1'
+ERROR HY000: Operation CREATE ROLE failed for 'role_1',role already exists
 CREATE USER u1@localhost;
 REVOKE SHOW DATABASES ON *.* FROM 'u1'@'localhost';
 GRANT SHOW DATABASES ON *.* TO role_1;

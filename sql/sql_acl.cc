@@ -10353,6 +10353,9 @@ bool mysql_create_user(THD *thd, List <LEX_USER> &list, bool handle_as_role)
 
   if (result)
   {
+    const char *c= (handle_as_role) ? "role already exists" : \
+                                      "user already exists";
+    append_str(&wrong_users, c, strlen(c));
     my_error(ER_CANNOT_USER, MYF(0),
              (handle_as_role) ? "CREATE ROLE" : "CREATE USER",
              wrong_users.c_ptr_safe());
@@ -10463,10 +10466,14 @@ bool mysql_drop_user(THD *thd, List <LEX_USER> &list, bool handle_as_role)
 
   mysql_mutex_unlock(&acl_cache->lock);
 
-  if (result)
+  if (result){
+    const char *c= (handle_as_role) ? "role doesn't exist" : \
+                                  "user doesn't exist";
+    append_str(&wrong_users, c, strlen(c));
     my_error(ER_CANNOT_USER, MYF(0),
              (handle_as_role) ? "DROP ROLE" : "DROP USER",
              wrong_users.c_ptr_safe());
+  }
 
   if (binlog)
     result |= write_bin_log(thd, FALSE, thd->query(), thd->query_length());
@@ -10556,9 +10563,11 @@ bool mysql_rename_user(THD *thd, List <LEX_USER> &list)
 
   mysql_mutex_unlock(&acl_cache->lock);
 
-  if (result)
+  if (result){
+    const char *c= "user doesn't exist";
+    append_str(&wrong_users, c, strlen(c));
     my_error(ER_CANNOT_USER, MYF(0), "RENAME USER", wrong_users.c_ptr_safe());
-
+  }
   if (some_users_renamed && mysql_bin_log.is_open())
     result |= write_bin_log(thd, FALSE, thd->query(), thd->query_length());
 
@@ -10621,6 +10630,8 @@ int mysql_alter_user(THD* thd, List<LEX_USER> &users_list)
     /* 'if exists' flag leads to warnings instead of errors. */
     if (thd->lex->create_info.if_exists())
     {
+      const char *c= "user doesn't exist";
+      append_str(&wrong_users, c, strlen(c));
       push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
                           ER_CANNOT_USER,
                           ER_THD(thd, ER_CANNOT_USER),
@@ -10629,6 +10640,8 @@ int mysql_alter_user(THD* thd, List<LEX_USER> &users_list)
     }
     else
     {
+      const char *c= "user doesn't exist";
+      append_str(&wrong_users, c, strlen(c));
       my_error(ER_CANNOT_USER, MYF(0),
                "ALTER USER",
                wrong_users.c_ptr_safe());
