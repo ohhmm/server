@@ -2310,6 +2310,8 @@ public:
     *(static_cast<MYSQL_TIME*>(this))= *from;
     DBUG_ASSERT(is_valid_datetime_slow());
   }
+  Datetime(my_time_t unix_time, ulong second_part,
+           const Time_zone* time_zone);
 
   bool is_valid_datetime() const
   {

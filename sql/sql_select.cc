@@ -759,13 +759,11 @@ bool vers_select_conds_t::init_from_sysvar(THD *thd)
   start.unit= VERS_TIMESTAMP;
   if (type != SYSTEM_TIME_UNSPECIFIED && type != SYSTEM_TIME_ALL)
   {
-    MYSQL_TIME ltime;
-    thd->variables.time_zone->gmt_sec_to_TIME(&ltime, in.unix_time);
-    ltime.second_part = in.second_part;
-    Datetime dt(&ltime);
+    DBUG_ASSERT(type == SYSTEM_TIME_AS_OF);
+    Datetime dt(in.unix_time, in.second_part, thd->variables.time_zone);
+
     start.item= new (thd->mem_root)
         Item_datetime_literal(thd, &dt, TIME_SECOND_PART_DIGITS);
-
     if (!start.item)
       return true;
   }

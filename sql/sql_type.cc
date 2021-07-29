@@ -983,6 +983,13 @@ Datetime::Datetime(THD *thd, int *warn, const MYSQL_TIME *from,
   DBUG_ASSERT(is_valid_value_slow());
 }
 
+Datetime::Datetime(my_time_t unix_time, ulong second_part_arg,
+                   const Time_zone* time_zone)
+{
+  time_zone->gmt_sec_to_TIME(this, unix_time);
+  second_part= second_part_arg;
+}
+
 
 bool Temporal::datetime_add_nanoseconds_or_invalidate(THD *thd, int *warn, ulong nsec)
 {
