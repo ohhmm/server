@@ -3738,9 +3738,7 @@ const char* get_one_variable(THD *thd,
       break;
     }
   case SHOW_ATOMIC_COUNTER_UINT32_T:
-    end= int10_to_str(
-           static_cast<long>(*value.as_atomic_counter),
-           buff, 10);
+    end= int10_to_str(static_cast<long>(*value.as_atomic_counter), buff, 10);
     break;
   case SHOW_UNDEF:
     break;                                        // Return empty string
