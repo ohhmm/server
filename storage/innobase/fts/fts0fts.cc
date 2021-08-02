@@ -1593,8 +1593,7 @@ dberr_t fts_lock_tables(trx_t *trx, const dict_table_t &table)
 }
 
 /** Drops the common ancillary tables needed for supporting an FTS index
-on the given table. row_mysql_lock_data_dictionary must have been called
-before this.
+on the given table.
 @param trx          transaction to drop fts common table
 @param fts_table    table with an FTS index
 @param rename       whether to rename before dropping
@@ -1653,8 +1652,7 @@ dberr_t fts_drop_index_tables(trx_t *trx, const dict_index_t &index)
 
 /****************************************************************//**
 Drops FTS ancillary tables needed for supporting an FTS index
-on the given table. row_mysql_lock_data_dictionary must have been called
-before this.
+on the given table.
 @return DB_SUCCESS or error code */
 static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
@@ -1795,8 +1793,7 @@ fts_create_one_common_table(
 }
 
 /** Creates the common auxiliary tables needed for supporting an FTS index
-on the given table. row_mysql_lock_data_dictionary must have been called
-before this.
+on the given table.
 The following tables are created.
 CREATE TABLE $FTS_PREFIX_DELETED
 	(doc_id BIGINT UNSIGNED, UNIQUE CLUSTERED INDEX on doc_id)
@@ -1974,8 +1971,7 @@ fts_create_one_index_table(
 }
 
 /** Creates the column specific ancillary tables needed for supporting an
-FTS index on the given table. row_mysql_lock_data_dictionary must have
-been called before this.
+FTS index on the given table.
 
 All FTS AUX Index tables have the following schema.
 CREAT TABLE $FTS_PREFIX_INDEX_[1-6](
