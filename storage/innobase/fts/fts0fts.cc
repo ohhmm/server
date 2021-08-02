@@ -2852,8 +2852,6 @@ fts_delete(
 
 		trx->op_info = "adding doc id to FTS DELETED";
 
-		info->graph_owns_us = TRUE;
-
 		fts_table.suffix = "DELETED";
 
 		fts_get_table_name(&fts_table, table_name);

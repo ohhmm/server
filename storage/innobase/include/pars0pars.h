@@ -559,9 +559,6 @@ struct pars_info_t {
 					(pars_bound_lit_t*) */
 	ib_vector_t*	bound_ids;	/*!< bound ids, or NULL
 					(pars_bound_id_t*) */
-
-	ibool		graph_owns_us;	/*!< if TRUE (which is the default),
-					que_graph_free() will free us */
 };
 
 /** User-supplied function and argument. */
