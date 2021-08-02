@@ -966,7 +966,7 @@ void row_prebuilt_free(row_prebuilt_t *prebuilt)
 		rtr_clean_rtr_info(prebuilt->rtr_info, true);
 	}
 	if (prebuilt->table) {
-		dict_table_close(prebuilt->table, false, false);
+		dict_table_close(prebuilt->table);
 	}
 
 	mem_heap_free(prebuilt->heap);
