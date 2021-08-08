@@ -33,7 +33,10 @@
 use strict;
 use warnings;
 
+use File::Basename;
+
 BEGIN {
+  chdir(dirname($0));
   # Check that mysql-test-run.pl is started from mysql-test/
   unless ( -f "mysql-test-run.pl" )
   {
@@ -80,7 +83,6 @@ use Cwd ;
 use Cwd 'realpath';
 use Getopt::Long;
 use My::File::Path; # Patched version of File::Path
-use File::Basename;
 use File::Copy;
 use File::Find;
 use File::Temp qw/tempdir/;
