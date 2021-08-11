@@ -163,6 +163,8 @@ struct binlog_send_info {
   bool should_stop;
   size_t dirlen;
 
+  Gtid_event_filter *gtid_event_filter;
+
   binlog_send_info(THD *thd_arg, String *packet_arg, ushort flags_arg,
                    char *lfn)
     : thd(thd_arg), net(&thd_arg->net), packet(packet_arg),
@@ -185,6 +187,8 @@ struct binlog_send_info {
     error_text[0] = 0;
     bzero(&error_gtid, sizeof(error_gtid));
     until_binlog_state.init();
+
+    gtid_event_filter= NULL;
   }
 };
 
@@ -1751,6 +1755,23 @@ send_event_to_slave(binlog_send_info *info, Log_event_type event_type,
     }
   }
 
+  if (event_type == GTID_EVENT && info->using_gtid_state)
+  {
+    rpl_gtid event_gtid;
+    uchar flags2;
+    if (ev_offset > len ||
+        Gtid_log_event::peek((uchar *) packet->ptr() + ev_offset,
+                             len - ev_offset, current_checksum_alg,
+                             &event_gtid.domain_id, &event_gtid.server_id,
+                             &event_gtid.seq_no, &flags2, info->fdev))
+    {
+      info->error= ER_MASTER_FATAL_ERROR_READING_BINLOG;
+      return "Failed to read Gtid_log_event: corrupt binlog";
+    }
+    fprintf(stderr, "About to send GTID event to slave %u-%u-%llu\n",
+            event_gtid.domain_id, event_gtid.server_id, event_gtid.seq_no);
+  }
+
   /* Skip GTID event groups until we reach slave position within a domain_id. */
   if (event_type == GTID_EVENT && info->using_gtid_state)
   {
@@ -2834,7 +2855,7 @@ static int send_one_binlog_file(binlog_send_info *info,
 }
 
 void mysql_binlog_send(THD* thd, char* log_ident, my_off_t pos,
-                       ushort flags)
+                       ushort flags, Gtid_event_filter *filter)
 {
   LOG_INFO linfo;
 
@@ -2845,6 +2866,8 @@ void mysql_binlog_send(THD* thd, char* log_ident, my_off_t pos,
   binlog_send_info infoobj(thd, packet, flags, linfo.log_file_name);
   binlog_send_info *info= &infoobj;
   bool has_transmit_started= false;
+
+  info->gtid_event_filter= filter;
 
   int old_max_allowed_packet= thd->variables.max_allowed_packet;
   thd->variables.max_allowed_packet= MAX_MAX_ALLOWED_PACKET;
@@ -3016,6 +3039,7 @@ err:
   thd->reset_current_linfo();
   thd->variables.max_allowed_packet= old_max_allowed_packet;
   delete info->fdev;
+  delete info->gtid_event_filter;
 
   if (likely(info->error == 0))
   {

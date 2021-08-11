@@ -143,9 +143,17 @@ static char *charset= 0;
 
 static uint verbose= 0;
 
-static ulonglong start_position, stop_position;
+static char *start_pos_str, *stop_pos_str;
+static ulonglong start_position= BIN_LOG_HEADER_SIZE,
+                 stop_position= (longlong)(~(my_off_t)0) ;
 #define start_position_mot ((my_off_t)start_position)
 #define stop_position_mot  ((my_off_t)stop_position)
+
+static Delegating_gtid_event_filter *gtid_event_filter= NULL;
+static rpl_gtid *start_gtids, *stop_gtids;
+static my_bool is_event_gtid_active= FALSE;
+static uint32 n_start_gtid_ranges= 0;
+static uint32 n_stop_gtid_ranges= 0;
 
 static char *start_datetime_str, *stop_datetime_str;
 static my_time_t start_datetime= 0, stop_datetime= MY_TIME_T_MAX;
@@ -981,7 +989,40 @@ static bool print_row_event(PRINT_EVENT_INFO *print_event_info, Log_event *ev,
   return result;
 }
 
+static inline my_bool is_gtid_filtering_enabled()
+{
+  return gtid_event_filter != NULL;
+}
 
+/*
+  Where the binlog is processed sequentially, the variable is_event_gtid_active
+  keeps track of the state of active event groups. When a new Gtid_log_event is
+  read, if it should be output, this function will return true. Otherwise, this
+  function will return false.
+ */
+static inline my_bool is_event_group_active()
+{
+  return is_event_gtid_active;
+}
+
+/*
+  When a Gtid_log_event marks a GTID that should be output, this function is
+  invoked to change the program state to start writing binlog events until
+  the event group has ended.
+ */
+static inline void activate_current_event_group()
+{
+  is_event_gtid_active= TRUE;
+}
+
+/*
+  When an active event group has written its last event, this function is
+  invoked to change the program state to stop writing events.
+ */
+static inline void deactivate_current_event_group()
+{
+  is_event_gtid_active= FALSE;
+}
 /**
   Print the given event, and either delete it or delegate the deletion
   to someone else.
@@ -1019,11 +1060,35 @@ Exit_status process_event(PRINT_EVENT_INFO *print_event_info, Log_event *ev,
 #endif
 
   /*
+    If the binlog output should be filtered using GTIDs, test the new event
+    group to see if its events should be written or ignored.
+   */
+  if (ev_type == GTID_EVENT && is_gtid_filtering_enabled())
+  {
+    //filter_gtid((Gtid_log_event *) ev);
+    Gtid_log_event *gle= (Gtid_log_event*) ev;
+    rpl_gtid gtid;
+    gtid.domain_id= gle->domain_id;
+    gtid.server_id= gle->server_id;
+    gtid.seq_no= gle->seq_no;
+    if (!gtid_event_filter->exclude(&gtid))
+    {
+      activate_current_event_group();
+    }
+    else
+    {
+      deactivate_current_event_group();
+    }
+
+  }
+
+  /*
     Format events are not concerned by --offset and such, we always need to
     read them to be able to process the wanted events.
   */
   if (((rec_count >= offset) &&
-       (ev->when >= start_datetime)) ||
+       (ev->when >= start_datetime) &&
+       (!is_gtid_filtering_enabled() || is_event_group_active())) ||
       (ev_type == FORMAT_DESCRIPTION_EVENT))
   {
     if (ev_type != FORMAT_DESCRIPTION_EVENT)
@@ -1500,6 +1565,12 @@ end:
       }
     }
 
+    /* Xid_log_events or Query_log_events mark the end of a GTID event group. */
+    if ((ev_type == XID_EVENT || ev_type == QUERY_EVENT) && is_event_group_active())
+    {
+      deactivate_current_event_group();
+    }
+
     if (destroy_evt) /* destroy it later if not set (ignored table map) */
       delete ev;
   }
@@ -1507,242 +1578,238 @@ end:
   DBUG_RETURN(retval);
 }
 
-
-static struct my_option my_options[] =
-{
-  {"help", '?', "Display this help and exit.",
-   0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"base64-output", OPT_BASE64_OUTPUT_MODE,
-    /* 'unspec' is not mentioned because it is just a placeholder. */
-   "Determine when the output statements should be base64-encoded BINLOG "
-   "statements: "
-   "‘never’ neither prints base64 encodings nor verbose event data, and "
-   "will exit on error if a row-based event is found. "
-   "'decode-rows' decodes row events into commented SQL statements if the "
-   "--verbose option is also given. "
-   "‘auto’ outputs base64 encoded entries for row-based and format "
-   "description events. "
-   "If no option is given at all, the default is ‘auto', and is "
-   "consequently the only option that should be used when row-format events "
-   "are processed for re-execution.",
-   &opt_base64_output_mode_str, &opt_base64_output_mode_str,
-   0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  /*
-    mysqlbinlog needs charsets knowledge, to be able to convert a charset
-    number found in binlog to a charset name (to be able to print things
-    like this:
-    SET @`a`:=_cp850 0x4DFC6C6C6572 COLLATE `cp850_general_ci`;
-  */
-  {"character-sets-dir", OPT_CHARSETS_DIR,
-   "Directory for character set files.", &charsets_dir,
-   &charsets_dir, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"database", 'd', "List entries for just this database (local log only).",
-   &database, &database, 0, GET_STR_ALLOC, REQUIRED_ARG,
-   0, 0, 0, 0, 0, 0},
+static struct my_option my_options[]= {
+    {"help", '?', "Display this help and exit.", 0, 0, 0, GET_NO_ARG, NO_ARG,
+     0, 0, 0, 0, 0, 0},
+    {"base64-output", OPT_BASE64_OUTPUT_MODE,
+     /* 'unspec' is not mentioned because it is just a placeholder. */
+     "Determine when the output statements should be base64-encoded BINLOG "
+     "statements: "
+     "‘never’ neither prints base64 encodings nor verbose event data, and "
+     "will exit on error if a row-based event is found. "
+     "'decode-rows' decodes row events into commented SQL statements if the "
+     "--verbose option is also given. "
+     "‘auto’ outputs base64 encoded entries for row-based and format "
+     "description events. "
+     "If no option is given at all, the default is ‘auto', and is "
+     "consequently the only option that should be used when row-format events "
+     "are processed for re-execution.",
+     &opt_base64_output_mode_str, &opt_base64_output_mode_str, 0, GET_STR,
+     REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    /*
+      mysqlbinlog needs charsets knowledge, to be able to convert a charset
+      number found in binlog to a charset name (to be able to print things
+      like this:
+      SET @`a`:=_cp850 0x4DFC6C6C6572 COLLATE `cp850_general_ci`;
+    */
+    {"character-sets-dir", OPT_CHARSETS_DIR,
+     "Directory for character set files.", &charsets_dir, &charsets_dir, 0,
+     GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"database", 'd', "List entries for just this database (local log only).",
+     &database, &database, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
 #ifndef DBUG_OFF
-  {"debug", '#', "Output debug log.", &current_dbug_option,
-   &current_dbug_option, 0, GET_STR, OPT_ARG, 0, 0, 0, 0, 0, 0},
+    {"debug", '#', "Output debug log.", &current_dbug_option,
+     &current_dbug_option, 0, GET_STR, OPT_ARG, 0, 0, 0, 0, 0, 0},
 #endif
-  {"debug-check", OPT_DEBUG_CHECK, "Check memory and open file usage at exit .",
-   &debug_check_flag, &debug_check_flag, 0,
-   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"debug-info", OPT_DEBUG_INFO, "Print some debug info at exit.",
-   &debug_info_flag, &debug_info_flag,
-   0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"default_auth", OPT_DEFAULT_AUTH,
-   "Default authentication client-side plugin to use.",
-   &opt_default_auth, &opt_default_auth, 0,
-   GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"disable-log-bin", 'D', "Disable binary log. This is useful, if you "
-    "enabled --to-last-log and are sending the output to the same MariaDB server. "
-    "This way you could avoid an endless loop. You would also like to use it "
-    "when restoring after a crash to avoid duplication of the statements you "
-    "already have. NOTE: you will need a SUPER privilege to use this option.",
-   &disable_log_bin, &disable_log_bin, 0, GET_BOOL,
-   NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"flashback", 'B', "Flashback feature can rollback you committed data to a special time point.",
+    {"debug-check", OPT_DEBUG_CHECK,
+     "Check memory and open file usage at exit .", &debug_check_flag,
+     &debug_check_flag, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"debug-info", OPT_DEBUG_INFO, "Print some debug info at exit.",
+     &debug_info_flag, &debug_info_flag, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0,
+     0},
+    {"default_auth", OPT_DEFAULT_AUTH,
+     "Default authentication client-side plugin to use.", &opt_default_auth,
+     &opt_default_auth, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"disable-log-bin", 'D',
+     "Disable binary log. This is useful, if you "
+     "enabled --to-last-log and are sending the output to the same MariaDB "
+     "server. "
+     "This way you could avoid an endless loop. You would also like to use it "
+     "when restoring after a crash to avoid duplication of the statements you "
+     "already have. NOTE: you will need a SUPER privilege to use this option.",
+     &disable_log_bin, &disable_log_bin, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0,
+     0},
+    {"flashback", 'B',
+     "Flashback feature can rollback you committed data to a special time "
+     "point.",
 #ifdef WHEN_FLASHBACK_REVIEW_READY
-   "before Flashback feature writing a row, original row can insert to review-dbname.review-tablename,"
-   "and mysqlbinlog will login mysql by user(-u) and password(-p) and host(-h).",
+     "before Flashback feature writing a row, original row can insert to "
+     "review-dbname.review-tablename,"
+     "and mysqlbinlog will login mysql by user(-u) and password(-p) and "
+     "host(-h).",
 #endif
-   &opt_flashback, &opt_flashback, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
-   0, 0},
-  {"force-if-open", 'F', "Force if binlog was not closed properly.",
-   &force_if_open_opt, &force_if_open_opt, 0, GET_BOOL, NO_ARG,
-   1, 0, 0, 0, 0, 0},
-  {"force-read", 'f', "Force reading unknown binlog events.",
-   &force_opt, &force_opt, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
-   0, 0},
-  {"hexdump", 'H', "Augment output with hexadecimal and ASCII event dump.",
-   &opt_hexdump, &opt_hexdump, 0, GET_BOOL, NO_ARG,
-   0, 0, 0, 0, 0, 0},
-  {"host", 'h', "Get the binlog from server.", &host, &host,
-   0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"local-load", 'l', "Prepare local temporary files for LOAD DATA INFILE in the specified directory.",
-   &dirname_for_local_load, &dirname_for_local_load, 0,
-   GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"offset", 'o', "Skip the first N entries.", &offset, &offset,
-   0, GET_ULL, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"password", 'p', "Password to connect to remote server.",
-   0, 0, 0, GET_STR, OPT_ARG, 0, 0, 0, 0, 0, 0},
-  {"plugin_dir", OPT_PLUGIN_DIR, "Directory for client-side plugins.",
-    &opt_plugindir, &opt_plugindir, 0,
-   GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"port", 'P', "Port number to use for connection or 0 for default to, in "
-   "order of preference, my.cnf, $MYSQL_TCP_PORT, "
+     &opt_flashback, &opt_flashback, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"force-if-open", 'F', "Force if binlog was not closed properly.",
+     &force_if_open_opt, &force_if_open_opt, 0, GET_BOOL, NO_ARG, 1, 0, 0, 0,
+     0, 0},
+    {"force-read", 'f', "Force reading unknown binlog events.", &force_opt,
+     &force_opt, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"hexdump", 'H', "Augment output with hexadecimal and ASCII event dump.",
+     &opt_hexdump, &opt_hexdump, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"host", 'h', "Get the binlog from server.", &host, &host, 0,
+     GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"local-load", 'l',
+     "Prepare local temporary files for LOAD DATA INFILE in the specified "
+     "directory.",
+     &dirname_for_local_load, &dirname_for_local_load, 0, GET_STR_ALLOC,
+     REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"offset", 'o', "Skip the first N entries.", &offset, &offset, 0, GET_ULL,
+     REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"password", 'p', "Password to connect to remote server.", 0, 0, 0,
+     GET_STR, OPT_ARG, 0, 0, 0, 0, 0, 0},
+    {"plugin_dir", OPT_PLUGIN_DIR, "Directory for client-side plugins.",
+     &opt_plugindir, &opt_plugindir, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0,
+     0},
+    {"port", 'P',
+     "Port number to use for connection or 0 for default to, in "
+     "order of preference, my.cnf, $MYSQL_TCP_PORT, "
 #if MYSQL_PORT_DEFAULT == 0
-   "/etc/services, "
+     "/etc/services, "
 #endif
-   "built-in default (" STRINGIFY_ARG(MYSQL_PORT) ").",
-   &port, &port, 0, GET_INT, REQUIRED_ARG,
-   0, 0, 0, 0, 0, 0},
-  {"protocol", OPT_MYSQL_PROTOCOL,
-   "The protocol to use for connection (tcp, socket, pipe).",
-   0, 0, 0, GET_STR,  REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"read-from-remote-server", 'R', "Read binary logs from a MariaDB server.",
-   &remote_opt, &remote_opt, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
-   0, 0},
-  {"raw", 0, "Requires -R. Output raw binlog data instead of SQL "
-   "statements. Output files named after server logs.",
-   &opt_raw_mode, &opt_raw_mode, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
-   0, 0},
-  {"result-file", 'r', "Direct output to a given file. With --raw this is a "
-   "prefix for the file names.",
-   &result_file_name, &result_file_name, 0, GET_STR, REQUIRED_ARG,
-   0, 0, 0, 0, 0, 0},
+     "built-in default (" STRINGIFY_ARG(MYSQL_PORT) ").",
+     &port, &port, 0, GET_INT, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"protocol", OPT_MYSQL_PROTOCOL,
+     "The protocol to use for connection (tcp, socket, pipe).", 0, 0, 0,
+     GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"read-from-remote-server", 'R', "Read binary logs from a MariaDB server.",
+     &remote_opt, &remote_opt, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"raw", 0,
+     "Requires -R. Output raw binlog data instead of SQL "
+     "statements. Output files named after server logs.",
+     &opt_raw_mode, &opt_raw_mode, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"result-file", 'r',
+     "Direct output to a given file. With --raw this is a "
+     "prefix for the file names.",
+     &result_file_name, &result_file_name, 0, GET_STR, REQUIRED_ARG, 0, 0, 0,
+     0, 0, 0},
 #ifdef WHEN_FLASHBACK_REVIEW_READY
-  {"review", opt_flashback_review, "Print review sql in output file.",
-   &opt_flashback_review, &opt_flashback_review, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
-   0, 0},
-  {"review-dbname", opt_flashback_flashback_review_dbname,
-   "Writing flashback original row data into this db",
-   &flashback_review_dbname, &flashback_review_dbname,
-   0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"review-tablename", opt_flashback_flashback_review_tablename,
-   "Writing flashback original row data into this table",
-   &flashback_review_tablename, &flashback_review_tablename,
-   0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"review", opt_flashback_review, "Print review sql in output file.",
+     &opt_flashback_review, &opt_flashback_review, 0, GET_BOOL, NO_ARG, 0, 0,
+     0, 0, 0, 0},
+    {"review-dbname", opt_flashback_flashback_review_dbname,
+     "Writing flashback original row data into this db",
+     &flashback_review_dbname, &flashback_review_dbname, 0, GET_STR_ALLOC,
+     REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"review-tablename", opt_flashback_flashback_review_tablename,
+     "Writing flashback original row data into this table",
+     &flashback_review_tablename, &flashback_review_tablename, 0,
+     GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
 #endif
-  {"print-row-count", OPT_PRINT_ROW_COUNT,
-   "Print row counts for each row events",
-   &print_row_count, &print_row_count, 0, GET_BOOL, NO_ARG, 1, 0, 0, 0,
-   0, 0},
-  {"print-row-event-positions", OPT_PRINT_ROW_EVENT_POSITIONS,
-   "Print row event positions",
-   &print_row_event_positions, &print_row_event_positions, 0, GET_BOOL,
-   NO_ARG, 1, 0, 0, 0, 0, 0},
-  {"server-id", 0,
-   "Extract only binlog entries created by the server having the given id.",
-   &server_id, &server_id, 0, GET_ULONG,
-   REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"set-charset", OPT_SET_CHARSET,
-   "Add 'SET NAMES character_set' to the output.", &charset,
-   &charset, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"short-form", 's', "Just show regular queries: no extra info, no "
-   "row-based events and no row counts. This is mainly for testing only, "
-   "and should not be used to feed to the MariaDB server. "
-   "If you want to just suppress base64-output, you can instead "
-   "use --base64-output=never",
-   &short_form, &short_form, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
-   0, 0},
-  {"socket", 'S', "The socket file to use for connection.",
-   &sock, &sock, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0,
-   0, 0},
+    {"print-row-count", OPT_PRINT_ROW_COUNT,
+     "Print row counts for each row events", &print_row_count,
+     &print_row_count, 0, GET_BOOL, NO_ARG, 1, 0, 0, 0, 0, 0},
+    {"print-row-event-positions", OPT_PRINT_ROW_EVENT_POSITIONS,
+     "Print row event positions", &print_row_event_positions,
+     &print_row_event_positions, 0, GET_BOOL, NO_ARG, 1, 0, 0, 0, 0, 0},
+    {"server-id", 0,
+     "Extract only binlog entries created by the server having the given id.",
+     &server_id, &server_id, 0, GET_ULONG, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"set-charset", OPT_SET_CHARSET,
+     "Add 'SET NAMES character_set' to the output.", &charset, &charset, 0,
+     GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"short-form", 's',
+     "Just show regular queries: no extra info, no "
+     "row-based events and no row counts. This is mainly for testing only, "
+     "and should not be used to feed to the MariaDB server. "
+     "If you want to just suppress base64-output, you can instead "
+     "use --base64-output=never",
+     &short_form, &short_form, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"socket", 'S', "The socket file to use for connection.", &sock, &sock, 0,
+     GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
 #include <sslopt-longopts.h>
-  {"start-datetime", OPT_START_DATETIME,
-   "Start reading the binlog at first event having a datetime equal or "
-   "posterior to the argument; the argument must be a date and time "
-   "in the local time zone, in any format accepted by the MariaDB server "
-   "for DATETIME and TIMESTAMP types, for example: 2004-12-25 11:25:56 "
-   "(you should probably use quotes for your shell to set it properly).",
-   &start_datetime_str, &start_datetime_str,
-   0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"start-position", 'j',
-   "Start reading the binlog at position N. Applies to the first binlog "
-   "passed on the command line.",
-   &start_position, &start_position, 0, GET_ULL,
-   REQUIRED_ARG, BIN_LOG_HEADER_SIZE, BIN_LOG_HEADER_SIZE,
-   /*
-     COM_BINLOG_DUMP accepts only 4 bytes for the position
-     so remote log reading has lower limit.
-   */
-   (ulonglong)(0xffffffffffffffffULL), 0, 0, 0},
-  {"stop-datetime", OPT_STOP_DATETIME,
-   "Stop reading the binlog at first event having a datetime equal or "
-   "posterior to the argument; the argument must be a date and time "
-   "in the local time zone, in any format accepted by the MariaDB server "
-   "for DATETIME and TIMESTAMP types, for example: 2004-12-25 11:25:56 "
-   "(you should probably use quotes for your shell to set it properly).",
-   &stop_datetime_str, &stop_datetime_str,
-   0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"stop-never", 0, "Wait for more data from the server "
-   "instead of stopping at the end of the last log. Implies --to-last-log.",
-   &opt_stop_never, &opt_stop_never, 0,
-   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"stop-never-slave-server-id", 0,
-   "The slave server_id used for --read-from-remote-server --stop-never.",
-   &opt_stop_never_slave_server_id, &opt_stop_never_slave_server_id, 0,
-   GET_ULONG, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"stop-position", OPT_STOP_POSITION,
-   "Stop reading the binlog at position N. Applies to the last binlog "
-   "passed on the command line.",
-   &stop_position, &stop_position, 0, GET_ULL,
-   REQUIRED_ARG, (longlong)(~(my_off_t)0), BIN_LOG_HEADER_SIZE,
-   (ulonglong)(~(my_off_t)0), 0, 0, 0},
-  {"table", 'T', "List entries for just this table (local log only).",
-   &table, &table, 0, GET_STR_ALLOC, REQUIRED_ARG,
-   0, 0, 0, 0, 0, 0},
-  {"to-last-log", 't', "Requires -R. Will not stop at the end of the \
+    {"start-datetime", OPT_START_DATETIME,
+     "Start reading the binlog at first event having a datetime equal or "
+     "posterior to the argument; the argument must be a date and time "
+     "in the local time zone, in any format accepted by the MariaDB server "
+     "for DATETIME and TIMESTAMP types, for example: 2004-12-25 11:25:56 "
+     "(you should probably use quotes for your shell to set it properly).",
+     &start_datetime_str, &start_datetime_str, 0, GET_STR_ALLOC, REQUIRED_ARG,
+     0, 0, 0, 0, 0, 0},
+    {"start-position", 'j',
+     "Start reading the binlog at this position. Type can either be a positive "
+     "integer or a GTID. When using a positive integer, the value only "
+     "applies to the first binlog passed on the command line. In GTID mode, "
+     "multiple GTIDs can be passed as a comma separated list, where each must "
+     "have a unique domain id.",
+     &start_pos_str, &start_pos_str, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0,
+     0, 0, 0},
+    {"stop-datetime", OPT_STOP_DATETIME,
+     "Stop reading the binlog at first event having a datetime equal or "
+     "posterior to the argument; the argument must be a date and time "
+     "in the local time zone, in any format accepted by the MariaDB server "
+     "for DATETIME and TIMESTAMP types, for example: 2004-12-25 11:25:56 "
+     "(you should probably use quotes for your shell to set it properly).",
+     &stop_datetime_str, &stop_datetime_str, 0, GET_STR_ALLOC, REQUIRED_ARG, 0,
+     0, 0, 0, 0, 0},
+    {"stop-never", 0,
+     "Wait for more data from the server "
+     "instead of stopping at the end of the last log. Implies --to-last-log.",
+     &opt_stop_never, &opt_stop_never, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"stop-never-slave-server-id", 0,
+     "The slave server_id used for --read-from-remote-server --stop-never.",
+     &opt_stop_never_slave_server_id, &opt_stop_never_slave_server_id, 0,
+     GET_ULONG, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"stop-position", OPT_STOP_POSITION,
+     "Stop reading the binlog at this position. Type can either be a positive "
+     "integer or a GTID. When using a positive integer, the value only "
+     "applies to the last binlog passed on the command line. In GTID mode, "
+     "multiple GTIDs can be passed as a comma separated list, where each must "
+     "have a unique domain id.",
+     &stop_pos_str, &stop_pos_str, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0,
+     0, 0},
+    {"table", 'T', "List entries for just this table (local log only).",
+     &table, &table, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"to-last-log", 't', "Requires -R. Will not stop at the end of the \
 requested binlog but rather continue printing until the end of the last \
 binlog of the MariaDB server. If you send the output to the same MariaDB server, \
 that may lead to an endless loop.",
-   &to_last_remote_log, &to_last_remote_log, 0, GET_BOOL,
-   NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"user", 'u', "Connect to the remote server as username.",
-   &user, &user, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0,
-   0, 0},
-  {"verbose", 'v', "Reconstruct SQL statements out of row events. "
-                   "-v -v adds comments on column data types.",
-   0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"version", 'V', "Print version and exit.", 0, 0, 0, GET_NO_ARG, NO_ARG, 0,
-   0, 0, 0, 0, 0},
-  {"open_files_limit", OPT_OPEN_FILES_LIMIT,
-   "Used to reserve file descriptors for use by this program.",
-   &open_files_limit, &open_files_limit, 0, GET_ULONG,
-   REQUIRED_ARG, MY_NFILE, 8, OS_FILE_LIMIT, 0, 1, 0},
-  {"binlog-row-event-max-size", 0,
-   "The maximum size of a row-based binary log event in bytes. Rows will be "
-   "grouped into events smaller than this size if possible. "
-   "This value must be a multiple of 256.",
-   &opt_binlog_rows_event_max_size, &opt_binlog_rows_event_max_size, 0,
-   GET_ULONG, REQUIRED_ARG, UINT_MAX,  256, ULONG_MAX,  0, 256,  0},
+     &to_last_remote_log, &to_last_remote_log, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
+     0, 0},
+    {"user", 'u', "Connect to the remote server as username.", &user, &user, 0,
+     GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"verbose", 'v',
+     "Reconstruct SQL statements out of row events. "
+     "-v -v adds comments on column data types.",
+     0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"version", 'V', "Print version and exit.", 0, 0, 0, GET_NO_ARG, NO_ARG, 0,
+     0, 0, 0, 0, 0},
+    {"open_files_limit", OPT_OPEN_FILES_LIMIT,
+     "Used to reserve file descriptors for use by this program.",
+     &open_files_limit, &open_files_limit, 0, GET_ULONG, REQUIRED_ARG,
+     MY_NFILE, 8, OS_FILE_LIMIT, 0, 1, 0},
+    {"binlog-row-event-max-size", 0,
+     "The maximum size of a row-based binary log event in bytes. Rows will be "
+     "grouped into events smaller than this size if possible. "
+     "This value must be a multiple of 256.",
+     &opt_binlog_rows_event_max_size, &opt_binlog_rows_event_max_size, 0,
+     GET_ULONG, REQUIRED_ARG, UINT_MAX, 256, ULONG_MAX, 0, 256, 0},
 #ifndef DBUG_OFF
-  {"debug-binlog-row-event-max-encoded-size", 0,
-   "The maximum size of base64-encoded rows-event in one BINLOG pseudo-query "
-   "instance. When the computed actual size exceeds the limit "
-   "the BINLOG's argument string is fragmented in two.",
-   &opt_binlog_rows_event_max_encoded_size,
-   &opt_binlog_rows_event_max_encoded_size, 0,
-   GET_ULONG, REQUIRED_ARG, UINT_MAX/4,  256, ULONG_MAX,  0, 256,  0},
+    {"debug-binlog-row-event-max-encoded-size", 0,
+     "The maximum size of base64-encoded rows-event in one BINLOG "
+     "pseudo-query "
+     "instance. When the computed actual size exceeds the limit "
+     "the BINLOG's argument string is fragmented in two.",
+     &opt_binlog_rows_event_max_encoded_size,
+     &opt_binlog_rows_event_max_encoded_size, 0, GET_ULONG, REQUIRED_ARG,
+     UINT_MAX / 4, 256, ULONG_MAX, 0, 256, 0},
 #endif
-  {"verify-binlog-checksum", 'c', "Verify checksum binlog events.",
-   (uchar**) &opt_verify_binlog_checksum, (uchar**) &opt_verify_binlog_checksum,
-   0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"rewrite-db", OPT_REWRITE_DB,
-   "Updates to a database with a different name than the original. \
+    {"verify-binlog-checksum", 'c', "Verify checksum binlog events.",
+     (uchar **) &opt_verify_binlog_checksum,
+     (uchar **) &opt_verify_binlog_checksum, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
+     0, 0},
+    {"rewrite-db", OPT_REWRITE_DB,
+     "Updates to a database with a different name than the original. \
 Example: rewrite-db='from->to'.",
-   0, 0, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"skip-annotate-row-events", OPT_SKIP_ANNOTATE_ROWS_EVENTS,
-   "Don't print Annotate_rows events stored in the binary log.",
-   (uchar**) &opt_skip_annotate_row_events,
-   (uchar**) &opt_skip_annotate_row_events,
-   0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"print-table-metadata", OPT_PRINT_TABLE_METADATA,
-   "Print metadata stored in Table_map_log_event",
-   &opt_print_table_metadata, &opt_print_table_metadata, 0,
-   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
-};
+     0, 0, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"skip-annotate-row-events", OPT_SKIP_ANNOTATE_ROWS_EVENTS,
+     "Don't print Annotate_rows events stored in the binary log.",
+     (uchar **) &opt_skip_annotate_row_events,
+     (uchar **) &opt_skip_annotate_row_events, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0,
+     0, 0},
+    {"print-table-metadata", OPT_PRINT_TABLE_METADATA,
+     "Print metadata stored in Table_map_log_event", &opt_print_table_metadata,
+     &opt_print_table_metadata, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}};
 
 
 /**
@@ -1824,7 +1891,13 @@ static void cleanup()
   my_free(const_cast<char*>(dirname_for_local_load));
   my_free(start_datetime_str);
   my_free(stop_datetime_str);
+  my_free(start_pos_str);
+  my_free(stop_pos_str);
+  my_free(start_gtids);
+  my_free(stop_gtids);
   free_root(&glob_root, MYF(0));
+
+  delete gtid_event_filter;
 
   delete binlog_filter;
   delete glob_description_event;
@@ -1890,7 +1963,6 @@ static my_time_t convert_str_to_timestamp(const char* str)
   return
     my_system_gmt_sec(&l_time, &dummy_my_timezone, &dummy_in_dst_time_gap);
 }
-
 
 extern "C" my_bool
 get_one_option(const struct my_option *opt, const char *argument, const char *filename)
@@ -2075,6 +2147,107 @@ get_one_option(const struct my_option *opt, const char *argument, const char *fi
     print_version();
     opt_version= 1;
     break;
+  case OPT_STOP_POSITION:
+  {
+    stop_gtids= gtid_parse_string_to_list(stop_pos_str, strlen(stop_pos_str),
+                                          &n_stop_gtid_ranges);
+    if (stop_gtids == NULL)
+    {
+      int err= 0;
+      char *end_ptr= NULL;
+      /*
+        No GTIDs specified in OPT_STOP_POSITION specification. Treat the value
+        as a singular index.
+       */
+      stop_position= my_strtoll10(stop_pos_str, &end_ptr, &err);
+
+      if (err || *end_ptr)
+      {
+        // Can't parse the position from the user
+        sql_print_error("Stop position argument value is invalid. Should be "
+                        "either a position or GTID.");
+        return 1;
+      }
+    }
+    else if (n_stop_gtid_ranges > 0)
+    {
+      uint32 gtid_idx;
+      if (gtid_event_filter == NULL)
+      {
+        gtid_event_filter= new Delegating_gtid_event_filter();
+      }
+      for (gtid_idx = 0; gtid_idx < n_stop_gtid_ranges; gtid_idx++)
+      {
+        rpl_gtid *stop_gtid= &stop_gtids[gtid_idx];
+        if (!gtid_event_filter->add_stop_gtid(stop_gtid))
+        {
+          sql_print_error("Cannot add stop position; domain id %u "
+                          "already has a stop position",
+                          stop_gtid->domain_id);
+          return 1;
+        }
+      }
+    }
+    else
+    {
+      // Can't parse the position from the user
+      sql_print_error("Stop position argument value is invalid. Should be "
+                      "either a position or GTID.");
+      return 1;
+    }
+    break;
+  }
+  case 'j':
+  {
+    start_gtids= gtid_parse_string_to_list(
+        start_pos_str, strlen(start_pos_str), &n_start_gtid_ranges);
+
+    if (start_gtids == NULL)
+    {
+      int err= 0;
+      char *end_ptr= NULL;
+      /*
+        No GTIDs specified in OPT_START_POSITION specification. Treat the value
+        as a singular index.
+       */
+      start_position= my_strtoll10(start_pos_str, &end_ptr, &err);
+
+      if (err || *end_ptr)
+      {
+        // Can't parse the position from the user
+        sql_print_error("Start position argument value is invalid. Should be "
+                        "either a position or GTID.");
+        return 1;
+      }
+    }
+    else if (n_start_gtid_ranges > 0)
+    {
+      uint32 gtid_idx;
+      if (gtid_event_filter == NULL)
+      {
+        gtid_event_filter= new Delegating_gtid_event_filter();
+      }
+      for (gtid_idx = 0; gtid_idx < n_start_gtid_ranges; gtid_idx++)
+      {
+        rpl_gtid *start_gtid= &start_gtids[gtid_idx];
+        if (!gtid_event_filter->add_start_gtid(start_gtid))
+        {
+          sql_print_error("Cannot add start position; domain id %u "
+                          "already has a start position",
+                          start_gtid->domain_id);
+          return 1;
+        }
+      }
+    }
+    else
+    {
+      // Can't parse the position from the user
+      sql_print_error("Start position argument value is invalid. Should be "
+                      "either a position or GTID.");
+      return 1;
+    }
+    break;
+  }
   case '?':
     usage();
     opt_version= 1;
@@ -2095,6 +2268,7 @@ static int parse_args(int *argc, char*** argv)
   {
     die();
   }
+
   if (debug_info_flag)
     my_end_arg= MY_CHECK_ERROR | MY_GIVE_INFO;
   else if (debug_check_flag)
@@ -2237,11 +2411,12 @@ static Exit_status dump_log_entries(const char* logname)
   @retval ERROR_STOP An error occurred - the program should terminate.
   @retval OK_CONTINUE No error, the program should continue.
 */
-static Exit_status check_master_version()
+static Exit_status check_master_version(uint *major, uint *minor, uint *patch)
 {
   MYSQL_RES* res = 0;
   MYSQL_ROW row;
   uint version;
+  size_t version_iter;
 
   if (mysql_query(mysql, "SELECT VERSION()") ||
       !(res = mysql_store_result(mysql)))
@@ -2254,15 +2429,52 @@ static Exit_status check_master_version()
   {
     error("Could not find server version: "
           "Master returned no rows for SELECT VERSION().");
-    goto err;
   }
 
-  if (!(version = atoi(row[0])))
+  if (!(*major = atoi(row[0])))
   {
     error("Could not find server version: "
           "Master reported NULL for the version.");
-    goto err;
   }
+
+  if (minor != NULL)
+  {
+    // Doesn't care about the minor version
+    for (version_iter= 0; version_iter < strlen((const char *) row);
+         version_iter++)
+    {
+      if (row[0][version_iter] == '.')
+      {
+        version_iter= version_iter + 1;
+        break;
+      }
+    }
+    if (!(*minor= atoi(&row[0][version_iter])))
+    {
+      error("Could not find server minor version: "
+            "Master reported NULL for the minor version.");
+    }
+  }
+
+  if (patch != NULL)
+  {
+    for (; version_iter < strlen((const char *) row); version_iter++)
+    {
+      if (row[0][version_iter] == '.')
+      {
+        version_iter= version_iter + 1;
+        break;
+      }
+    }
+    if (!(*patch= atoi(&row[0][version_iter])))
+    {
+      error("Could not find server patch version: "
+            "Master reported NULL for the patch version.");
+    }
+  }
+
+  version= *major;
+
   /* 
      Make a notice to the server that this client
      is checksum-aware. It does not need the first fake Rotate
@@ -2606,21 +2818,60 @@ static Exit_status dump_remote_log_entries(PRINT_EVENT_INFO *print_event_info,
     DBUG_RETURN(retval);
   net= &mysql->net;
 
-  if ((retval= check_master_version()) != OK_CONTINUE)
+  uint major_version, minor_version;
+  if ((retval= check_master_version(&major_version, &minor_version, NULL)) != OK_CONTINUE)
     DBUG_RETURN(retval);
 
   /*
     COM_BINLOG_DUMP accepts only 4 bytes for the position, so we are forced to
     cast to uint32.
   */
-  DBUG_ASSERT(start_position <= UINT_MAX32);
-  int4store(buf, (uint32)start_position);
+  size_t buf_idx= 0;
+  if (is_gtid_filtering_enabled())
+  {
+    if (major_version < 10 || (major_version == 10 && minor_version < 7))
+    {
+      error("Master does not support GTID filtering");
+      DBUG_RETURN(ERROR_STOP);
+    }
+
+    size_t i;
+    for (i = 0; i < n_start_gtid_ranges; i++)
+    {
+      if (i > 0)
+      {
+        fprintf(stderr, "packing comma\n");
+        buf[buf_idx]= ',';
+        buf_idx += 1;
+      }
+
+      fprintf(stderr, "packing gtid %u-%u-%llu\n",
+      start_gtids[i].domain_id,
+      start_gtids[i].server_id,
+      start_gtids[i].seq_no
+      );
+
+      int4store(buf + buf_idx, start_gtids[i].domain_id);
+      buf[buf_idx+4]= '-';
+      int4store(buf + buf_idx + 5, start_gtids[i].server_id);
+      buf[buf_idx+9]= '-';
+      int8store(buf + buf_idx + 10, start_gtids[i].seq_no);
+      buf_idx += 18;
+    }
+  }
+  else
+  {
+    DBUG_ASSERT(start_position <= UINT_MAX32);
+    int4store(buf, (uint32) start_position);
+    buf_idx= BIN_LOG_HEADER_SIZE;
+  }
   if (!opt_skip_annotate_row_events)
     binlog_flags|= BINLOG_SEND_ANNOTATE_ROWS_EVENT;
   if (!opt_stop_never)
     binlog_flags|= BINLOG_DUMP_NON_BLOCK;
 
-  int2store(buf + BIN_LOG_HEADER_SIZE, binlog_flags);
+  int2store(buf + buf_idx, binlog_flags);
+  buf_idx += 2;
 
   size_t tlen = strlen(logname);
   if (tlen > sizeof(buf) - 10)
@@ -2637,9 +2888,10 @@ static Exit_status dump_remote_log_entries(PRINT_EVENT_INFO *print_event_info,
   }
   else
     slave_id= 0;
-  int4store(buf + 6, slave_id);
-  memcpy(buf + 10, logname, logname_len);
-  if (simple_command(mysql, COM_BINLOG_DUMP, buf, logname_len + 10, 1))
+  int4store(buf + buf_idx, slave_id);
+  buf_idx += 4;
+  memcpy(buf + buf_idx, logname, logname_len);
+  if (simple_command(mysql, COM_BINLOG_DUMP, buf, logname_len + buf_idx, 1))
   {
     error("Got fatal error sending the log dump command.");
     DBUG_RETURN(ERROR_STOP);
@@ -3210,6 +3462,14 @@ int main(int argc, char** argv)
               "/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;\n");
 
     fprintf(result_file, "/*!50530 SET @@SESSION.PSEUDO_SLAVE_MODE=0*/;\n");
+
+    if (is_gtid_filtering_enabled())
+    {
+      fprintf(result_file,
+              "/*!100001 SET @@SESSION.SERVER_ID=@@GLOBAL.SERVER_ID */;\n"
+              "/*!100001 SET @@SESSION.GTID_DOMAIN_ID=@@GLOBAL.GTID_DOMAIN_ID "
+              "*/;\n");
+    }
   }
 
   if (tmpdir.list)
@@ -3271,3 +3531,4 @@ struct encryption_service_st encryption_handler=
 #include "sql_list.cc"
 #include "rpl_filter.cc"
 #include "compat56.cc"
+#include "rpl_gtid.cc"
