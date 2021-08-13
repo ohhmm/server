@@ -3755,6 +3755,7 @@ static const char *old_mode_names[]=
   "NO_PROGRESS_INFO",
   "ZERO_DATE_TIME_CAST",
   "UTF8_IS_UTF8MB3",
+  "COMPATIBILITY",
   0
 };
 

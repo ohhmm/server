@@ -8437,6 +8437,13 @@ static int get_options(int *argc_ptr, char ***argv_ptr)
     between options, setting of multiple variables, etc.
     Do them here.
   */
+
+  if (global_system_variables.old_mode)
+  {
+    sql_print_warning("--old option is deprecated. Changing @@old_mode to use COMPATIBILITY");
+    global_system_variables.old_behavior|= OLD_MODE_COMPATIBILITY;
+  }
+
   if (global_system_variables.net_buffer_length > 
       global_system_variables.max_allowed_packet)
   {
