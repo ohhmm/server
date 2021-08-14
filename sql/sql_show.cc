@@ -69,6 +69,8 @@
 
 #include "lex_symbol.h"
 #define KEYWORD_SIZE 64
+#define IS_USER_TEMP_TABLE(A) ((A->tmp_table == TRANSACTIONAL_TMP_TABLE) || \
+                          (A->tmp_table == NON_TRANSACTIONAL_TMP_TABLE))
 
 extern SYMBOL symbols[];
 extern size_t symbols_length;
@@ -5487,21 +5489,41 @@ static int get_schema_tables_record(THD *thd, TABLE_LIST *tables,
     TABLE_SHARE *share= show_table->s;
     handler *file= show_table->db_stat ? show_table->file : 0;
     handlerton *tmp_db_type= share->db_type();
+    // Scan for temporary tables
+    TMP_TABLE_SHARE *share_temp;
+    TABLE *table_temp;
+    bool is_temp=0;
+    while (thd->temporary_tables && (share_temp= thd->temporary_tables->pop_front()))
+    {
+      while ((table_temp= share_temp->all_tmp_tables.pop_front()))
+      {
+        //if (IS_USER_TEMP_TABLE(share_temp))
+        //{
+          is_temp=1;
+          table->field[3]->store(STRING_WITH_LEN("TEMPORARY"), cs);
+          show_table= table_temp;
+          share= table_temp->s;
+        //}
+      }
+    }
 #ifdef WITH_PARTITION_STORAGE_ENGINE
     bool is_partitioned= FALSE;
 #endif
 
-    if (share->tmp_table == SYSTEM_TMP_TABLE)
+    if (share->tmp_table == SYSTEM_TMP_TABLE && !is_temp)
       table->field[3]->store(STRING_WITH_LEN("SYSTEM VIEW"), cs);
-    else if (share->table_type == TABLE_TYPE_SEQUENCE)
+    else if (share->table_type == TABLE_TYPE_SEQUENCE && !is_temp)
       table->field[3]->store(STRING_WITH_LEN("SEQUENCE"), cs);
     else
     {
       DBUG_ASSERT(share->tmp_table == NO_TMP_TABLE);
-      if (share->versioned)
-        table->field[3]->store(STRING_WITH_LEN("SYSTEM VERSIONED"), cs);
-      else
-        table->field[3]->store(STRING_WITH_LEN("BASE TABLE"), cs);
+      if (!is_temp)
+      {
+        if (share->versioned)
+          table->field[3]->store(STRING_WITH_LEN("SYSTEM VERSIONED"), cs);
+        else
+          table->field[3]->store(STRING_WITH_LEN("BASE TABLE"), cs);
+      }
     }
 
     for (uint i= 4; i < table->s->fields; i++)
