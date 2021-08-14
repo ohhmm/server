@@ -11140,13 +11140,12 @@ int TC_LOG_BINLOG::recover(LOG_INFO *linfo, const char *last_log_name,
   int round;
 
   if (! fdle->is_valid() ||
-      (do_xa && my_hash_init(key_memory_binlog_recover_exec, &xids, &my_charset_bin, TC_LOG_PAGE_SIZE/3, 0,
-                             sizeof(my_xid), 0, 0, MYF(0))))
+      my_hash_init(key_memory_binlog_recover_exec, &xids, &my_charset_bin,
+                   TC_LOG_PAGE_SIZE/3, 0, sizeof(my_xid), 0, 0, MYF(0)))
     goto err1;
 
-  if (do_xa)
-    init_alloc_root(key_memory_binlog_recover_exec, &mem_root,
-                    TC_LOG_PAGE_SIZE, TC_LOG_PAGE_SIZE, MYF(0));
+  init_alloc_root(key_memory_binlog_recover_exec, &mem_root,
+                  TC_LOG_PAGE_SIZE, TC_LOG_PAGE_SIZE, MYF(0));
 
   fdle->flags&= ~LOG_EVENT_BINLOG_IN_USE_F; // abort on the first error
 
