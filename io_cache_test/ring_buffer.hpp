@@ -2,6 +2,7 @@
 #include <mysql/psi/mysql_file.h>
 #include <mysys_priv.h>
 #include <semaphore.h>
+#include <atomic>
 
 class RingBuffer
 {
@@ -22,7 +23,7 @@ private:
 
   class cache_slot {
     friend RingBuffer;
-    bool vacant = true;
+    std::atomic<bool> vacant{true};
     mysql_mutex_t vacant_lock;
     bool finished = false;
     int next = -1;
@@ -48,10 +49,14 @@ private:
   int slot_acquire(uchar*& From, size_t& Count) {
     sem_wait(&semaphore);
     int i;
+    mysql_mutex_lock(&_buffer_lock);
     for (i = 0; i < count_thread_for_slots; ++i)
-      if(_slots[i].vacant)
-        if(mysql_mutex_trylock(&_slots[i].vacant_lock) == 0)
-          break;
+    {
+      auto &vacant= _slots[i].vacant;
+      if(vacant.load(std::memory_order_relaxed)
+         && vacant.exchange(false, std::memory_order_acquire))
+        break;
+    }
 
     _slots[i].vacant = false;
 
@@ -59,7 +64,6 @@ private:
       _slots[last_slot].next = i;
     last_slot = i;
 
-    mysql_mutex_lock(&_buffer_lock);
     size_t rest_length = (size_t) (_write_end - _write_new_pos);
     if(Count > rest_length) {
       memcpy(_write_new_pos, From, rest_length);
@@ -80,25 +84,28 @@ private:
   bool slot_release(int slot_id) {
 
     _slots[slot_id].finished = true;
-    if(_write_pos == _slots[slot_id].pos_start) {
+    mysql_rwlock_unlock(&flush_rw_lock);
+
+    mysql_mutex_lock(&_buffer_lock);
+    if(last_slot != -1 && _write_pos == _slots[slot_id].pos_start) {
       do {
-        mysql_mutex_lock(&_buffer_lock);
         _write_pos = _slots[slot_id].pos_end;
-        mysql_mutex_unlock(&_buffer_lock);
         int tmp_id = slot_id;
         slot_id = _slots[slot_id].next;
 
         _slots[tmp_id].next = -1;
         _slots[tmp_id].finished = false;
+        assert(_slots[tmp_id].pos_start != nullptr);
+        assert(_slots[tmp_id].pos_end != nullptr);
         _slots[tmp_id].pos_start = _slots[tmp_id].pos_end = nullptr;
-        mysql_mutex_unlock(&_slots[tmp_id].vacant_lock);
+        assert(!_slots[tmp_id].vacant);
         _slots[tmp_id].vacant = true;
         sem_post(&semaphore);
       }
       while(slot_id != -1 && _slots[slot_id].finished);
       if(slot_id == -1) last_slot = -1;
     }
-    mysql_rwlock_unlock(&flush_rw_lock);
+    mysql_mutex_unlock(&_buffer_lock);
 
     return true;
   }
@@ -447,6 +454,15 @@ int RingBuffer::_flush_io_buffer() {
     //++info->disk_writes;
     //mysql_mutex_unlock(&_buffer_lock);
     return _error;
+  }
+
+  for (auto &slot: _slots)
+  {
+    slot.finished= false;
+    slot.vacant= true;
+    slot.next= -1;
+    slot.pos_start= nullptr;
+    slot.pos_end= nullptr;
   }
 
   //mysql_mutex_unlock(&_buffer_lock);
