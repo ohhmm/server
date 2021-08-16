@@ -371,7 +371,7 @@ int PFS_system_variable_cache::make_call(Request_func func, uint param)
   {
     auto apc_call= new PFS_system_variable_cache_apc(this, func, param);
     bool timed_out;
-    mysql_mutex_lock(&m_safe_thd->LOCK_thd_kill);
+//    mysql_mutex_lock(&m_safe_thd->LOCK_thd_kill);
     ret= m_safe_thd->apc_target.make_apc_call(requestor_thd, apc_call, 0,
                                               &timed_out);
   }
@@ -407,8 +407,8 @@ int PFS_system_variable_cache::do_materialize_session(PFS_thread *pfs_thread)
     // Refresh all system vars
     ret= make_call(&PFS_system_variable_cache::refresh_vars, 0);
 
-    /* Release lock taken in get_THD(). */
-    mysql_mutex_unlock(&m_safe_thd->LOCK_thd_data);
+//    /* Release lock taken in get_THD(). */
+//    mysql_mutex_unlock(&m_safe_thd->LOCK_thd_data);
 
     m_materialized= true;
   }
