@@ -40,6 +40,7 @@
 #include <mysql/plugin_data_type.h>
 #include <mysql/plugin_function.h>
 #include "sql_plugin_compat.h"
+#include "debug_sync.h"
 
 static PSI_memory_key key_memory_plugin_mem_root;
 static PSI_memory_key key_memory_plugin_int_mem_root;
@@ -234,6 +235,12 @@ static struct
 /* support for Services */
 
 #include "sql_plugin_services.ic"
+
+/*
+  A mutex LOCK_plugin_delete must be acquired before calling plugin_del
+  function.
+*/
+mysql_mutex_t LOCK_plugin_delete;
 
 /*
   A mutex LOCK_plugin must be acquired before accessing the
@@ -1291,6 +1298,7 @@ static void plugin_del(struct st_plugin_int *plugin)
 {
   DBUG_ENTER("plugin_del");
   mysql_mutex_assert_owner(&LOCK_plugin);
+  mysql_mutex_assert_owner(&LOCK_plugin_delete);
   /* Free allocated strings before deleting the plugin. */
   plugin_vars_free_values(plugin->system_vars);
   restore_ptr_backup(plugin->nbackups, plugin->ptr_backup);
@@ -1342,10 +1350,13 @@ static void reap_plugins(void)
   while ((plugin= *(--list)))
       plugin_deinitialize(plugin, true);
 
+  mysql_mutex_lock(&LOCK_plugin_delete);
   mysql_mutex_lock(&LOCK_plugin);
 
   while ((plugin= *(--reap)))
     plugin_del(plugin);
+
+  mysql_mutex_unlock(&LOCK_plugin_delete);
 
   my_afree(reap);
 }
@@ -1549,10 +1560,12 @@ static inline void convert_underscore_to_dash(char *str, size_t len)
 
 #ifdef HAVE_PSI_INTERFACE
 static PSI_mutex_key key_LOCK_plugin;
+static PSI_mutex_key key_LOCK_plugin_delete;
 
 static PSI_mutex_info all_plugin_mutexes[]=
 {
-  { &key_LOCK_plugin, "LOCK_plugin", PSI_FLAG_GLOBAL}
+  { &key_LOCK_plugin, "LOCK_plugin", PSI_FLAG_GLOBAL},
+  { &key_LOCK_plugin_delete, "LOCK_plugin_delete", PSI_FLAG_GLOBAL}
 };
 
 static PSI_memory_info all_plugin_memory[]=
@@ -1782,8 +1795,10 @@ int plugin_init(int *argc, char **argv, int flags)
     if (plugin_is_forced(plugin_ptr))
       reaped_mandatory_plugin= TRUE;
     plugin_deinitialize(plugin_ptr, true);
+    mysql_mutex_lock(&LOCK_plugin_delete);
     mysql_mutex_lock(&LOCK_plugin);
     plugin_del(plugin_ptr);
+    mysql_mutex_unlock(&LOCK_plugin_delete);
   }
 
   mysql_mutex_unlock(&LOCK_plugin);
@@ -2097,10 +2112,11 @@ void plugin_shutdown(void)
       }
 
     /*
-      It's perfectly safe not to lock LOCK_plugin, as there're no
-      concurrent threads anymore. But some functions called from here
-      use mysql_mutex_assert_owner(), so we lock the mutex to satisfy it
+      It's perfectly safe not to lock LOCK_plugin, LOCK_plugin_delete, as
+      there're no concurrent threads anymore. But some functions called from
+      here use mysql_mutex_assert_owner(), so we lock the mutex to satisfy it
     */
+    mysql_mutex_lock(&LOCK_plugin_delete);
     mysql_mutex_lock(&LOCK_plugin);
 
     /*
@@ -2124,9 +2140,11 @@ void plugin_shutdown(void)
     cleanup_variables(&global_system_variables);
     cleanup_variables(&max_system_variables);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_mutex_unlock(&LOCK_plugin_delete);
 
     initialized= 0;
     mysql_mutex_destroy(&LOCK_plugin);
+    mysql_mutex_destroy(&LOCK_plugin_delete);
 
     my_afree(plugins);
   }
@@ -4417,6 +4435,8 @@ void plugin_mutex_init()
 {
   init_plugin_psi_keys();
   mysql_mutex_init(key_LOCK_plugin, &LOCK_plugin, MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_LOCK_plugin_delete, &LOCK_plugin_delete,
+                   MY_MUTEX_INIT_FAST);
 }
 
 #ifdef WITH_WSREP

@@ -78,6 +78,8 @@ extern size_t sql_functions_length;
 
 extern Native_func_registry_array native_func_registry_array;
 
+extern mysql_mutex_t LOCK_plugin_delete;
+
 enum enum_i_s_events_fields
 {
   ISE_EVENT_CATALOG= 0,
@@ -7870,6 +7872,7 @@ int fill_open_tables(THD *thd, TABLE_LIST *tables, COND *cond)
 int fill_variables(THD *thd, TABLE_LIST *tables, COND *cond)
 {
   DBUG_ENTER("fill_variables");
+  SHOW_VAR *sys_var_array;
   int res= 0;
   LEX *lex= thd->lex;
   const char *wild= lex->wild ? lex->wild->ptr() : NullS;
@@ -7884,8 +7887,14 @@ int fill_variables(THD *thd, TABLE_LIST *tables, COND *cond)
     scope= OPT_GLOBAL;
 
   COND *partial_cond= make_cond_for_info_schema(thd, cond, tables);
-
+  /*
+    Lock LOCK_plugin_delete to avoid deletion of any plugins while creating
+    SHOW_VAR array and hold it until all variables are stored in the table.
+  */
+  mysql_mutex_lock(&LOCK_plugin_delete);
+  // Lock LOCK_system_variables_hash to prepare SHOW_VARs array.
   mysql_prlock_rdlock(&LOCK_system_variables_hash);
+  DEBUG_SYNC(thd, "acquired_LOCK_system_variables_hash");
 
   /*
     Avoid recursive LOCK_system_variables_hash acquisition in
@@ -7897,10 +7906,14 @@ int fill_variables(THD *thd, TABLE_LIST *tables, COND *cond)
        thd->variables.dynamic_variables_head))
     sync_dynamic_session_variables(thd, true);
 
-  res= show_status_array(thd, wild, enumerate_sys_vars(thd, sorted_vars, scope),
-                         scope, NULL, "", tables->table,
-                         upper_case_names, partial_cond);
+  DEBUG_SYNC(thd, "acquired_LOCK_system_variables_hash");
+  sys_var_array= enumerate_sys_vars(thd, sorted_vars, scope);
   mysql_prlock_unlock(&LOCK_system_variables_hash);
+
+  res= show_status_array(thd, wild, sys_var_array, scope, NULL, "",
+                         tables->table, upper_case_names, cond);
+
+  mysql_mutex_unlock(&LOCK_plugin_delete);
   DBUG_RETURN(res);
 }
 
