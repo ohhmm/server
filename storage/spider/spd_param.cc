@@ -3349,6 +3349,26 @@ static MYSQL_SYSVAR_INT(
   0 /* blk */
 );
 
+/*
+  FALSE: Direct SELECT is disabled
+  TRUE:  Direct SELECT is enabled
+ */
+static MYSQL_THDVAR_BOOL(
+  enable_direct_select, /* name */
+  PLUGIN_VAR_OPCMDARG,  /* opt */
+  "Enable direct SELECT, i.e., use GROUP BY handler", /* comment */
+  NULL, /* check */
+  NULL, /* update */
+  TRUE  /* def */
+);
+
+bool spider_param_enable_direct_select(
+  THD *thd
+) {
+  DBUG_ENTER("spider_param_enable_direct_select");
+  DBUG_RETURN(THDVAR(thd, enable_direct_select));
+}
+
 int spider_param_slave_trx_isolation()
 {
   DBUG_ENTER("spider_param_slave_trx_isolation");
@@ -3505,6 +3525,7 @@ static struct st_mysql_sys_var* spider_system_variables[] = {
   MYSQL_SYSVAR(table_crd_thread_count),
 #endif
   MYSQL_SYSVAR(slave_trx_isolation),
+  MYSQL_SYSVAR(enable_direct_select),
   NULL
 };
 
