@@ -121,9 +121,11 @@ IF(UNIX)
     CONFIGURE_FILE(mariadb.service.in
                    ${CMAKE_CURRENT_BINARY_DIR}/mariadb.service @ONLY)
     EXECUTE_PROCESS(
-    COMMAND ${CMAKE_COMMAND} -E create_symlink ./mariadb.service mysql.service
-    COMMAND ${CMAKE_COMMAND} -E create_symlink ./mariadb.service mysqld.service
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+      COMMAND ${CMAKE_COMMAND} -E create_symlink ./mariadb.service mysql.service
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    EXECUTE_PROCESS(
+      COMMAND ${CMAKE_COMMAND} -E create_symlink ./mariadb.service mysqld.service
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
     INSTALL(FILES use_galera_new_cluster.conf
             ${CMAKE_CURRENT_BINARY_DIR}/mariadb.service

@@ -27,13 +27,14 @@ IF(NOT ${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
 ENDIF()
 IF(UNIX)
   EXECUTE_PROCESS(
-  COMMAND chmod +x  mysql-test-run.pl
-  COMMAND ${CMAKE_COMMAND} -E create_symlink 
-   ./mysql-test-run.pl mtr
-  COMMAND ${CMAKE_COMMAND} -E create_symlink 
-   ./mysql-test-run.pl mysql-test-run
-  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  ) 
+    COMMAND chmod +x mysql-test-run.pl
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  EXECUTE_PROCESS(
+    COMMAND ${CMAKE_COMMAND} -E create_symlink ./mysql-test-run.pl mtr
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  EXECUTE_PROCESS(
+    COMMAND ${CMAKE_COMMAND} -E create_symlink ./mysql-test-run.pl mysql-test-run
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
   IF(INSTALL_MYSQLTESTDIR AND out_of_source_build)
     INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/mtr
       ${CMAKE_CURRENT_BINARY_DIR}/mysql-test-run
