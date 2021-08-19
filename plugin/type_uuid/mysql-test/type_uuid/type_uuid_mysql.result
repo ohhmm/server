@@ -4,7 +4,7 @@ Catalog:    `def`
 Database:   `test`
 Table:      `t1`
 Org_table:  `t1`
-Type:       STRING
+Type:       STRING (type=uuid)
 Collation:  latin1_swedish_ci (8)
 Length:     36
 Max_length: 0

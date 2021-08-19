@@ -1,5 +1,4 @@
-/*
-   Copyright (c) 2019 MariaDB Corporation
+/* Copyright (c) 2019,2021 MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -72,7 +71,19 @@ err:
 }
 
 
-bool UUID::make_from_item(Item *item)
+bool UUID::fix_fields_maybe_null_on_conversion_to_uuid(Item *item)
+{
+  if (item->maybe_null())
+    return true;
+  if (item->type_handler() == &type_handler_uuid)
+    return false;
+  if (!item->const_item() || item->is_expensive())
+    return true;
+  return UUID_null(item, false).is_null();
+}
+
+
+bool UUID::make_from_item(Item *item, bool warn)
 {
   if (item->type_handler() == &type_handler_uuid)
   {
@@ -87,18 +98,18 @@ bool UUID::make_from_item(Item *item)
   }
   StringBufferUUID tmp;
   String *str= item->val_str(&tmp);
-  return str ? make_from_character_or_binary_string(str) : true;
+  return str ? make_from_character_or_binary_string(str, warn) : true;
 }
 
 
-bool UUID::make_from_character_or_binary_string(const String *str)
+bool UUID::make_from_character_or_binary_string(const String *str, bool warn)
 {
   static Name name= type_handler_uuid.name();
   if (str->charset() != &my_charset_bin)
   {
     bool rc= character_string_to_uuid(str->ptr(), str->length(),
                                       str->charset());
-    if (rc)
+    if (rc && warn)
       current_thd->push_warning_wrong_value(Sql_condition::WARN_LEVEL_WARN,
                                             name.ptr(),
                                             ErrConvString(str).ptr());
@@ -106,6 +117,7 @@ bool UUID::make_from_character_or_binary_string(const String *str)
   }
   if (str->length() != sizeof(m_buffer))
   {
+    if (warn)
     current_thd->push_warning_wrong_value(Sql_condition::WARN_LEVEL_WARN,
                                           name.ptr(),
                                           ErrConvString(str).ptr());
@@ -173,9 +185,15 @@ class Field_uuid: public Field
                      Sql_condition::enum_warning_level level)
   {
     static const Name type_name= type_handler_uuid.name();
-    if (get_thd()->count_cuted_fields > CHECK_FIELD_EXPRESSION)
-      get_thd()->push_warning_truncated_value_for_field(level, type_name.ptr(),
-        str.ptr(), table->s->db.str, table->s->table_name.str, field_name.str);
+    if (get_thd()->count_cuted_fields <= CHECK_FIELD_EXPRESSION)
+      return;
+    const TABLE_SHARE *s= table->s;
+    get_thd()->push_warning_truncated_value_for_field(level, type_name.ptr(),
+                                                      str.ptr(),
+                                                      s ? s->db.str : nullptr,
+                                                      s ? s->table_name.str
+                                                      : nullptr,
+                                                      field_name.str);
   }
   int set_null_with_warn(const ErrConv &str)
   {
@@ -266,6 +284,12 @@ public:
   {
     static Name name= type_handler_uuid.name();
     str.set_ascii(name.ptr(), name.length());
+  }
+
+  void make_send_field(Send_field *to) override
+  {
+    Field::make_send_field(to);
+    to->set_data_type_name(type_handler_uuid.name().lex_cstring());
   }
 
   bool validate_value_in_record(THD *thd, const uchar *record) const override
@@ -542,12 +566,12 @@ public:
              unpack(to, from, from_end, param_data);
   }
 
-  uint max_packed_col_length(uint max_length)
+  uint max_packed_col_length(uint max_length) override
   {
     return StringPack::max_packed_col_length(max_length);
   }
 
-  uint packed_col_length(const uchar *data_ptr, uint length)
+  uint packed_col_length(const uchar *data_ptr, uint length) override
   {
     return StringPack::packed_col_length(data_ptr, length);
   }
@@ -592,6 +616,8 @@ public:
   bool fix_length_and_dec() override
   {
     Type_std_attributes::operator=(Type_std_attributes_uuid());
+    if (UUID::fix_fields_maybe_null_on_conversion_to_uuid(args[0]))
+      set_maybe_null();
     return false;
   }
   String *val_str(String *to) override
@@ -874,15 +900,13 @@ Type_handler_uuid::character_or_binary_string_to_native(THD *thd,
   UUID_null tmp(*str);
   if (tmp.is_null())
     thd->push_warning_wrong_value(Sql_condition::WARN_LEVEL_WARN,
-                                  name().ptr(),
-                                  ErrConvString(str).ptr());
+                                  name().ptr(), ErrConvString(str).ptr());
   return tmp.is_null() || tmp.to_native(to);
 }
 
 
 bool
-Type_handler_uuid::Item_save_in_value(THD *thd,
-                                       Item *item,
+Type_handler_uuid::Item_save_in_value(THD *thd, Item *item,
                                        st_value *value) const
 {
   value->m_type= DYN_COL_STRING;
@@ -894,8 +918,7 @@ Type_handler_uuid::Item_save_in_value(THD *thd,
     {
       // The value was not-null, but conversion to UUID failed.
       thd->push_warning_wrong_value(Sql_condition::WARN_LEVEL_WARN,
-                                    name().ptr(),
-                                    ErrConvString(str).ptr());
+                                    name().ptr(), ErrConvString(str).ptr());
       value->m_type= DYN_COL_NULL;
       return true;
     }
@@ -935,7 +958,6 @@ void Type_handler_uuid::make_sort_key_part(uchar *to, Item *item,
   memcpy(to, tmp.ptr(), tmp.length());
 }
 
-
 uint
 Type_handler_uuid::make_packed_sort_key_part(uchar *to, Item *item,
                                              const SORT_FIELD_ATTR *sort_field,
@@ -960,12 +982,11 @@ Type_handler_uuid::make_packed_sort_key_part(uchar *to, Item *item,
   return tmp.length();
 }
 
-
 void Type_handler_uuid::sort_length(THD *thd,
                                      const Type_std_attributes *item,
                                      SORT_FIELD_ATTR *attr) const
 {
-  attr->length= UUID::binary_length();
+  attr->original_length= attr->length= UUID::binary_length();
   attr->suffix_length= 0;
 }
 

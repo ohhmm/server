@@ -1,7 +1,7 @@
 #ifndef SQL_TYPE_UUID_INCLUDED
 #define SQL_TYPE_UUID_INCLUDED
 
-/* Copyright (c) 2019 MariaDB
+/* Copyright (c) 2019,2021 MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,7 +14,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA */
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
 
 class NativeBufferUUID: public NativeBuffer<MY_UUID_SIZE+1>
@@ -26,12 +26,13 @@ class StringBufferUUID: public StringBuffer<MY_UUID_STRING_LENGTH+1>
 {
 };
 
+/***********************************************************************/
 
 class UUID
 {
 protected:
   char m_buffer[MY_UUID_SIZE];
-  bool make_from_item(Item *item);
+  bool make_from_item(Item *item, bool warn);
   UUID() { } // Non-initializing constructor
 public:
   static uint binary_length() { return MY_UUID_SIZE; }
@@ -46,12 +47,18 @@ public:
     return true;
   }
 
-public:
-  UUID(Item *item, bool *error)
-  {
-    *error= make_from_item(item);
-  }
+  /*
+    Check at Item's fix_fields() time if "item" can return a nullable value
+    on conversion to UUID, or conversion produces a NOT NULL UUID value.
+  */
+  static bool fix_fields_maybe_null_on_conversion_to_uuid(Item *item);
 
+public:
+
+  UUID(Item *item, bool *error, bool warn= true)
+  {
+    *error= make_from_item(item, warn);
+  }
   void to_binary(char *str, size_t str_size) const
   {
     DBUG_ASSERT(str_size >= sizeof(m_buffer));
@@ -95,7 +102,7 @@ public:
     }
     return ascii_to_uuid(str, str_length);
   }
-  bool make_from_character_or_binary_string(const String *str);
+  bool make_from_character_or_binary_string(const String *str, bool warn);
   bool binary_to_uuid(const char *str, size_t length)
   {
     if (length != sizeof(m_buffer))
@@ -155,8 +162,8 @@ public:
    :UUID_null(str.ptr(), str.length())
   { }
   // Initialize from an Item
-  UUID_null(Item *item)
-   :Null_flag(make_from_item(item))
+  UUID_null(Item *item, bool warn= true)
+   :Null_flag(make_from_item(item, warn))
   { }
 public:
   const UUID& to_uuid() const
@@ -210,6 +217,11 @@ public:
   protocol_send_type_t protocol_send_type() const override
   {
     return PROTOCOL_SEND_STRING;
+  }
+  bool Item_append_extended_type_info(Send_field_extended_metadata *to,
+                                      const Item *item) const override
+  {
+    return to->set_data_type_name(name().lex_cstring());
   }
 
   enum_field_types field_type() const override
@@ -288,9 +300,19 @@ public:
   }
   decimal_digits_t Item_decimal_precision(const Item *item) const override
   {
-    return 39; //QQ
+    /*
+      This will be needed if we ever allow cast from UUID to DECIMAL.
+      Decimal precision of UUID is 39 digits:
+      'ffffffff-ffff-ffff-ffff-ffffffffffff' =
+       340282366920938463463374607431768211456  = 39 digits
+    */
+    return 39;
   }
 
+  /*
+    Returns how many digits a divisor adds into a division result.
+    See Item::divisor_precision_increment() in item.h for more comments.
+  */
   decimal_digits_t Item_divisor_precision_increment(const Item *) const override
   {
     return 0;
@@ -322,15 +344,17 @@ public:
                                         handler *file,
                                         ulonglong table_flags,
                                         const Column_derived_attributes
-                                              *derived_attr) const override
+                                              *derived_attr)
+                                        const override
   {
-    def->create_length_to_internal_length_simple();
+    def->prepare_stage1_simple(&my_charset_numeric);
     return false;
   }
 
   bool Column_definition_redefine_stage1(Column_definition *def,
                                          const Column_definition *dup,
-                                         const handler *file) const override
+                                         const handler *file)
+                                         const override
   {
     def->redefine_stage1_common(dup, file);
     def->set_compression_method(dup->compression_method());
@@ -387,12 +411,14 @@ public:
     return def->frm_unpack_charset(share, buffer);
   }
   void make_sort_key_part(uchar *to, Item *item,
-                          const SORT_FIELD_ATTR *sort_field, Sort_param *param)
+                          const SORT_FIELD_ATTR *sort_field,
+                          Sort_param *param)
                           const override;
   uint make_packed_sort_key_part(uchar *to, Item *item,
                                  const SORT_FIELD_ATTR *sort_field,
                                  Sort_param *param) const override;
-  void sort_length(THD *thd, const Type_std_attributes *item,
+  void sort_length(THD *thd,
+                  const Type_std_attributes *item,
                    SORT_FIELD_ATTR *attr) const override;
   uint32 max_display_length(const Item *item) const override
   {
@@ -507,14 +533,13 @@ public:
   {
     /*
       WHERE COALESCE(uuid_col)='val' AND COALESCE(uuid_col)=CONCAT(a);  -->
-      WHERE COALESCE(uuid_col)='val' AND               'val'=CONCAT(a);
+      WHERE COALESCE(uuid_col)='val' AND              'val'=CONCAT(a);
     */
     return target->compare_type_handler() == source->compare_type_handler();
   }
   bool
   subquery_type_allows_materialization(const Item *inner,
-                                       const Item *outer,
-                                       bool is_in_predicate) const override
+                                       const Item *outer, bool) const override
   {
     /*
       Example:
@@ -581,6 +606,24 @@ public:
   {
     attr->Type_std_attributes::operator=(Type_std_attributes_uuid());
     h->set_handler(this);
+    /*
+      If some of the arguments cannot be safely converted to "UUID NOT NULL",
+      then mark the entire function nullability as NULL-able.
+      Otherwise, keep the generic nullability calculated by earlier stages:
+      - either by the most generic way in Item_func::fix_fields()
+      - or by Item_func_xxx::fix_length_and_dec() before the call of
+        Item_hybrid_func_fix_attributes()
+      IFNULL() is special. It does not need to test args[0].
+    */
+    uint first= dynamic_cast<Item_func_ifnull*>(attr) ? 1 : 0;
+    for (uint i= first; i < nitems; i++)
+    {
+      if (UUID::fix_fields_maybe_null_on_conversion_to_uuid(items[i]))
+      {
+        attr->set_type_maybe_null(true);
+        break;
+      }
+    }
     return false;
   }
   bool Item_func_min_max_fix_attributes(THD *thd,
@@ -864,5 +907,6 @@ public:
 
 
 extern MYSQL_PLUGIN_IMPORT Type_handler_uuid  type_handler_uuid;
+
 
 #endif // SQL_TYPE_UUID_INCLUDED

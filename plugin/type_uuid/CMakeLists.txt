@@ -1,4 +1,4 @@
-# Copyright (c) 2016-2019, MariaDB corporation. All rights reserved.
+# Copyright (c) 2019,2021, MariaDB Corporation
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by

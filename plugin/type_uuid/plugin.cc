@@ -1,5 +1,4 @@
-/*
-   Copyright (c) 2019 MariaDB Corporation
+/* Copyright (c) 2019,2021, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -53,12 +52,6 @@ protected:
 };
 
 
-Create_func_uuid Create_func_uuid::s_singleton;
-
-static Plugin_function
-  plugin_descriptor_function_uuid(&Create_func_uuid::s_singleton);
-
-
 class Create_func_sys_guid : public Create_func_arg0
 {
 public:
@@ -76,12 +69,12 @@ protected:
   virtual ~Create_func_sys_guid() {}
 };
 
-
+Create_func_uuid Create_func_uuid::s_singleton;
 Create_func_sys_guid Create_func_sys_guid::s_singleton;
 
 static Plugin_function
+  plugin_descriptor_function_uuid(&Create_func_uuid::s_singleton),
   plugin_descriptor_function_sys_guid(&Create_func_sys_guid::s_singleton);
-
 
 /*************************************************************************/
 
@@ -99,7 +92,7 @@ maria_declare_plugin(type_uuid)
   NULL,                         // Status variables
   NULL,                         // System variables
   "1.0",                        // String version representation
-  MariaDB_PLUGIN_MATURITY_ALPHA // Maturity(see include/mysql/plugin.h)*/
+  MariaDB_PLUGIN_MATURITY_BETA  // Maturity(see include/mysql/plugin.h)*/
 },
 {
   MariaDB_FUNCTION_PLUGIN,      // the plugin type (see include/mysql/plugin.h)
@@ -114,7 +107,7 @@ maria_declare_plugin(type_uuid)
   NULL,                         // Status variables
   NULL,                         // System variables
   "1.0",                        // String version representation
-  MariaDB_PLUGIN_MATURITY_ALPHA // Maturity(see include/mysql/plugin.h)*/
+  MariaDB_PLUGIN_MATURITY_BETA  // Maturity(see include/mysql/plugin.h)*/
 },
 {
   MariaDB_FUNCTION_PLUGIN,      // the plugin type (see include/mysql/plugin.h)
@@ -129,6 +122,6 @@ maria_declare_plugin(type_uuid)
   NULL,                         // Status variables
   NULL,                         // System variables
   "1.0",                        // String version representation
-  MariaDB_PLUGIN_MATURITY_ALPHA // Maturity(see include/mysql/plugin.h)*/
+  MariaDB_PLUGIN_MATURITY_BETA  // Maturity(see include/mysql/plugin.h)*/
 }
 maria_declare_plugin_end;
