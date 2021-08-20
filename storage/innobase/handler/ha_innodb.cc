@@ -13218,10 +13218,8 @@ ha_innobase::discard_or_import_tablespace(
 	trx_start_if_not_started(m_prebuilt->trx, true);
 
 	/* Obtain an exclusive lock on the table. */
-	dberr_t	err = row_mysql_lock_table(
-		m_prebuilt->trx, m_prebuilt->table, LOCK_X,
-		discard ? "setting table lock for DISCARD TABLESPACE"
-			: "setting table lock for IMPORT TABLESPACE");
+	dberr_t	err = lock_table_for_trx(m_prebuilt->table,
+					 m_prebuilt->trx, LOCK_X);
 
 	if (err != DB_SUCCESS) {
 		/* unable to lock the table: do nothing */
