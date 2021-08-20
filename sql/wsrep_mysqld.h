@@ -307,8 +307,6 @@ static inline bool wsrep_cluster_address_exists()
   return wsrep_cluster_address && wsrep_cluster_address[0];
 }
 
-#define WSREP_QUERY(thd) (thd->query())
-
 extern my_bool wsrep_ready_get();
 extern void wsrep_ready_wait();
 
