@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2020, MariaDB Corporation.
+Copyright (c) 2017, 2021, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -90,6 +90,9 @@ srv_get_encryption_data_filename(
 	dict_table_t*	table,
 	char*		filename,
 	ulint		max_len);
+
+THD *acquire_thd(void **ctx);
+void release_thd(THD *thd, void *ctx);
 
 /** Log sequence number at shutdown */
 extern	lsn_t	srv_shutdown_lsn;

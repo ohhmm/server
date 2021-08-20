@@ -614,6 +614,9 @@ The state (current item) is stored in function parameter.
 */
 static void btr_defragment_chunk(void*)
 {
+	void *ctx;
+	THD *thd = acquire_thd(&ctx);
+
 	btr_defragment_item_t* item = nullptr;
 	mtr_t		mtr;
 
@@ -622,7 +625,10 @@ static void btr_defragment_chunk(void*)
 	while (srv_shutdown_state == SRV_SHUTDOWN_NONE) {
 		if (!item) {
 			if (btr_defragment_wq.empty()) {
+release_and_exit:
 				mysql_mutex_unlock(&btr_defragment_mutex);
+func_exit:
+				release_thd(thd, ctx);
 				return;
 			}
 			item = *btr_defragment_wq.begin();
@@ -651,7 +657,7 @@ processed:
 			int sleep_ms = (int)((srv_defragment_interval - elapsed) / 1000 / 1000);
 			if (sleep_ms) {
 				btr_defragment_timer->set_time(sleep_ms, 0);
-				return;
+				goto func_exit;
 			}
 		}
 		log_free_check();
@@ -693,7 +699,8 @@ processed:
 					    << " index " << index->name()
 					    << " failed with error " << err;
 			} else {
-				err = dict_stats_save_defrag_summary(index);
+				err = dict_stats_save_defrag_summary(index,
+								     thd);
 
 				if (err != DB_SUCCESS) {
 					ib::error() << "Saving defragmentation summary for table "
@@ -711,5 +718,5 @@ processed:
 		}
 	}
 
-	mysql_mutex_unlock(&btr_defragment_mutex);
+	goto release_and_exit;
 }

@@ -2177,8 +2177,8 @@ row_create_table_for_mysql(
 	tab_node_t*	node;
 	mem_heap_t*	heap;
 	que_thr_t*	thr;
-	dberr_t		err;
 
+	ut_ad(trx->state == TRX_STATE_ACTIVE);
 	ut_ad(dict_sys.sys_tables_exist());
 	ut_ad(dict_sys.locked());
 	ut_ad(trx->dict_operation_lock_mode == RW_X_LATCH);
@@ -2205,7 +2205,7 @@ row_create_table_for_mysql(
 
 	que_run_threads(thr);
 
-	err = trx->error_state;
+	dberr_t err = trx->error_state;
 
 	if (err != DB_SUCCESS) {
 		trx->error_state = DB_SUCCESS;
@@ -2271,14 +2271,14 @@ row_create_index_for_mysql(
 		}
 	}
 
-	trx->op_info = "creating index";
-
 	/* For temp-table we avoid insertion into SYSTEM TABLES to
 	maintain performance and so we have separate path that directly
 	just updates dictonary cache. */
 	if (!table->is_temporary()) {
-		trx_start_if_not_started_xa(trx, true);
-		trx->dict_operation = true;
+		ut_ad(trx->state == TRX_STATE_ACTIVE);
+		ut_ad(trx->dict_operation);
+		trx->op_info = "creating index";
+
 		/* Note that the space id where we store the index is
 		inherited from the table in dict_build_index_def_step()
 		in dict0crea.cc. */
@@ -2306,6 +2306,8 @@ row_create_index_for_mysql(
 		if (index && (index->type & DICT_FTS)) {
 			err = fts_create_index_tables(trx, index, table->id);
 		}
+
+		trx->op_info = "";
 	} else {
 		dict_build_index_def(table, index, trx);
 
@@ -2326,8 +2328,6 @@ row_create_index_for_mysql(
 			}
 		}
 	}
-
-	trx->op_info = "";
 
 	return(err);
 }
@@ -2687,7 +2687,7 @@ row_rename_table_for_mysql(
 	old_is_tmp = dict_table_t::is_temporary_name(old_name);
 	new_is_tmp = dict_table_t::is_temporary_name(new_name);
 
-	table = dict_table_open_on_name(old_name, true, false,
+	table = dict_table_open_on_name(old_name, true,
 					DICT_ERR_IGNORE_FK_NOKEY);
 
 	/* We look for pattern #P# to see if the table is partitioned
@@ -2732,7 +2732,7 @@ row_rename_table_for_mysql(
 		normalize_table_name_c_low(
 			par_case_name, old_name, FALSE);
 #endif
-		table = dict_table_open_on_name(par_case_name, true, false,
+		table = dict_table_open_on_name(par_case_name, true,
 						DICT_ERR_IGNORE_FK_NOKEY);
 	}
 

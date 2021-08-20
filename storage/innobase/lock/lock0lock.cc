@@ -1264,17 +1264,11 @@ lock_rec_enqueue_waiting(
 
 	trx_t* trx = thr_get_trx(thr);
 	ut_ad(trx->mutex_is_owner());
-
-	if (UNIV_UNLIKELY(trx->dict_operation_lock_mode == RW_X_LATCH)) {
-		ut_ad(!strcmp(index->table->name.m_name, TABLE_STATS_NAME)
-		      || !strcmp(index->table->name.m_name, INDEX_STATS_NAME));
-instant_timeout:
-		trx->error_state = DB_LOCK_WAIT_TIMEOUT;
-		return DB_LOCK_WAIT_TIMEOUT;
-	}
+	ut_ad(!trx->dict_operation_lock_mode);
 
 	if (trx->mysql_thd && thd_lock_wait_timeout(trx->mysql_thd) == 0) {
-		goto instant_timeout;
+		trx->error_state = DB_LOCK_WAIT_TIMEOUT;
+		return DB_LOCK_WAIT_TIMEOUT;
 	}
 
 	/* Enqueue the lock request that will wait to be granted, note that
@@ -1491,6 +1485,12 @@ lock_rec_lock(
                      static_cast<lock_mode>(LOCK_MODE_MASK & mode)))
     return DB_SUCCESS;
 
+  /* During CREATE TABLE, we will write to newly created FTS_*_CONFIG
+  on which no lock has been created yet. */
+  ut_ad(!trx->dict_operation_lock_mode ||
+        (strstr(index->table->name.m_name, "/FTS_") &&
+         strstr(index->table->name.m_name, "_CONFIG") + sizeof("_CONFIG") ==
+         index->table->name.m_name + strlen(index->table->name.m_name) + 1));
   MONITOR_ATOMIC_INC(MONITOR_NUM_RECLOCK_REQ);
   const page_id_t id{block->page.id()};
   LockGuard g{lock_sys.rec_hash, id};
@@ -3072,20 +3072,15 @@ void lock_rec_restore_from_page_infimum(const buf_block_t &block,
 
 /*========================= TABLE LOCKS ==============================*/
 
-/*********************************************************************//**
-Creates a table lock object and adds it as the last in the lock queue
-of the table. Does NOT check for deadlocks or lock compatibility.
-@return own: new lock object */
-UNIV_INLINE
-lock_t*
-lock_table_create(
-/*==============*/
-	dict_table_t*	table,	/*!< in/out: database table
-				in dictionary cache */
-	unsigned	type_mode,/*!< in: lock mode possibly ORed with
-				LOCK_WAIT */
-	trx_t*		trx,	/*!< in: trx */
-	lock_t*		c_lock)	/*!< in: conflicting lock */
+/**
+Create a table lock, without checking for deadlocks or lock compatibility.
+@param table      table on which the lock is created
+@param type_mode  lock type and mode
+@param trx        transaction
+@param c_lock     conflicting lock
+@return the created lock object */
+lock_t *lock_table_create(dict_table_t *table, unsigned type_mode, trx_t *trx,
+                          lock_t *c_lock)
 {
 	lock_t*		lock;
 
@@ -3094,6 +3089,12 @@ lock_table_create(
 	ut_ad(!trx->is_wsrep() || lock_sys.is_writer());
 	ut_ad(trx->state == TRX_STATE_ACTIVE || trx->is_recovered);
 	ut_ad(!trx->is_autocommit_non_locking());
+	/* During CREATE TABLE, we will write to newly created FTS_*_CONFIG
+	on which no lock has been created yet. */
+	ut_ad(!trx->dict_operation_lock_mode
+	      || (strstr(table->name.m_name, "/FTS_")
+		  && strstr(table->name.m_name, "_CONFIG") + sizeof("_CONFIG")
+		  == table->name.m_name + strlen(table->name.m_name) + 1));
 
 	switch (LOCK_MODE_MASK & type_mode) {
 	case LOCK_AUTO_INC:
@@ -3310,13 +3311,7 @@ lock_table_enqueue_waiting(
 
 	trx_t* trx = thr_get_trx(thr);
 	ut_ad(trx->mutex_is_owner());
-
-	if (UNIV_UNLIKELY(trx->dict_operation_lock_mode == RW_X_LATCH)) {
-		ut_ad(!strcmp(table->name.m_name, TABLE_STATS_NAME)
-		      || !strcmp(table->name.m_name, INDEX_STATS_NAME));
-		trx->error_state = DB_LOCK_WAIT_TIMEOUT;
-		return DB_LOCK_WAIT_TIMEOUT;
-	}
+	ut_ad(!trx->dict_operation_lock_mode);
 
 #ifdef WITH_WSREP
 	if (trx->is_wsrep() && trx->lock.was_chosen_as_deadlock_victim) {
@@ -3478,7 +3473,7 @@ void lock_table_resurrect(dict_table_t *table, trx_t *trx, lock_mode mode)
     ut_ad(!lock_table_other_has_incompatible(trx, LOCK_WAIT, table, mode));
 
     trx->mutex_lock();
-    lock_table_create(table, mode, trx, nullptr);
+    lock_table_create(table, mode, trx);
   }
   trx->mutex_unlock();
 }
@@ -3617,6 +3612,23 @@ run_again:
 	trx->op_info = "";
 
 	return(err);
+}
+
+/** Exclusively lock the data dictionary tables.
+@param trx  dictionary transaction
+@return error code
+@retval DB_SUCCESS on success */
+dberr_t lock_sys_tables(trx_t *trx)
+{
+  dberr_t err;
+  if (!(err= lock_table_for_trx(dict_sys.sys_tables, trx, LOCK_X)) &&
+      !(err= lock_table_for_trx(dict_sys.sys_columns, trx, LOCK_X)) &&
+      !(err= lock_table_for_trx(dict_sys.sys_indexes, trx, LOCK_X)) &&
+      !(err= lock_table_for_trx(dict_sys.sys_fields, trx, LOCK_X)) &&
+      !(err= lock_table_for_trx(dict_sys.sys_foreign, trx, LOCK_X)) &&
+      !(err= lock_table_for_trx(dict_sys.sys_foreign_cols, trx, LOCK_X)))
+    err= lock_table_for_trx(dict_sys.sys_virtual, trx, LOCK_X);
+  return err;
 }
 
 /*=========================== LOCK RELEASE ==============================*/

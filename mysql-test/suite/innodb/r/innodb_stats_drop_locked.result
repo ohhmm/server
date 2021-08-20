@@ -26,6 +26,7 @@ innodb_stats_drop_locked
 innodb_stats_drop_locked
 innodb_stats_drop_locked
 connect  con1,localhost,root,,;
+SET innodb_lock_wait_timeout=1;
 ALTER TABLE innodb_stats_drop_locked DROP INDEX c_key;
 ERROR HY000: Lock wait timeout exceeded; try restarting transaction
 SHOW CREATE TABLE innodb_stats_drop_locked;
@@ -37,11 +38,13 @@ innodb_stats_drop_locked	CREATE TABLE `innodb_stats_drop_locked` (
 DROP TABLE innodb_stats_drop_locked;
 ERROR HY000: Lock wait timeout exceeded; try restarting transaction
 DROP DATABASE unlocked;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
 DROP DATABASE locked;
 ERROR HY000: Lock wait timeout exceeded; try restarting transaction
 disconnect con1;
 connection default;
 COMMIT;
+DROP DATABASE unlocked;
 DROP DATABASE locked;
 SELECT table_name FROM mysql.innodb_table_stats
 WHERE table_name='innodb_stats_drop_locked';
