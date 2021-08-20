@@ -2179,6 +2179,7 @@ row_create_table_for_mysql(
 	que_thr_t*	thr;
 	dberr_t		err;
 
+	ut_ad(dict_sys.sys_tables_exist());
 	ut_ad(dict_sys.locked());
 	ut_ad(trx->dict_operation_lock_mode == RW_X_LATCH);
 
@@ -2189,15 +2190,7 @@ row_create_table_for_mysql(
 		dict_mem_table_free(table); return DB_ERROR;
 	);
 
-	if (!dict_sys.sys_tables_exist()) {
-		sql_print_error("InnoDB: Some system tables are missing");
-		dict_mem_table_free(table);
-		return DB_ERROR;
-	}
-
 	trx->op_info = "creating table";
-
-	trx_start_if_not_started_xa(trx, true);
 
 	heap = mem_heap_create(512);
 
